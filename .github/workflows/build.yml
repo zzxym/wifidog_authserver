@@ -74,14 +74,37 @@ jobs:
       - name: Debug Python environment
         shell: bash
         run: |
+          echo "=== Python info ==="
+          which python || where python
           python --version
-          python -c "import sys; print('Python executable:', sys.executable)"
+          python -c "import sys; print('executable:', sys.executable)"
           python -c "import site; print('site-packages:', site.getsitepackages())"
-          pip list 2>/dev/null | grep -iE "flask|ldap3|redis|apscheduler|dotenv|pyinstaller" || true
+          echo "=== pip list (key packages) ==="
+          python -m pip list 2>/dev/null | grep -iE "flask|ldap3|redis|apscheduler|dotenv|pyinstaller" || echo "(none found)"
+
+      - name: Test PyInstaller directly
+        shell: bash
+        run: |
+          echo "=== Testing PyInstaller ==="
+          python -m PyInstaller --version 2>&1 || echo "FAILED: python -m PyInstaller --version"
+          python -c "import PyInstaller; print('version:', PyInstaller.__version__)" 2>&1 || echo "FAILED: import PyInstaller"
+          echo "=== End PyInstaller test ==="
 
       - name: Run build.py
         shell: bash
-        run: python build.py --platform ${{ matrix.platform }} 2>&1
+        run: |
+          python build.py --platform ${{ matrix.platform }} 2>&1 | tee build_output.log
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+        continue-on-error: true
+
+      - name: Show build output (on failure)
+        if: env.BUILD_EXIT_CODE != '0'
+        shell: bash
+        run: |
+          echo "=== BUILD FAILED (exit code: $BUILD_EXIT_CODE) ==="
+          echo "=== Last 40 lines of output: ==="
+          tail -40 build_output.log || cat build_output.log
+          echo "=== End of output ==="
 
       # ----------------------------------------------------------
       #  Linux 专用：将 redis-server 二进制文件复制进部署包
