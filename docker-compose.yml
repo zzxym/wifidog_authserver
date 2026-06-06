@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: wifidog-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  authserver:
+    build: .
+    container_name: wifidog-authserver
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_HOST=0.0.0.0
+      - FLASK_PORT=5000
+      - AD_SERVER=${AD_SERVER}
+      - AD_BIND_DN=${AD_BIND_DN}
+      - AD_BIND_PASSWORD=${AD_BIND_PASSWORD}
+      - AD_BASE_DN=${AD_BASE_DN}
+      - AD_USER_BASE_DN=${AD_USER_BASE_DN}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEFAULT_MAX_DEVICES=${DEFAULT_MAX_DEVICES:-3}
+      - TOKEN_EXPIRE_SECONDS=${TOKEN_EXPIRE_SECONDS:-28800}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  redis_data:
