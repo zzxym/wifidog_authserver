@@ -519,6 +519,16 @@ def admin_dashboard():
         if nt:
             next_cleanup = nt.strftime('%Y-%m-%d %H:%M:%S')
 
+    # Redis 连接失败时显示警告页面
+    if stats.get('error'):
+        return render_template_string(
+            ADMIN_REDIS_ERROR_TEMPLATE,
+            stats=stats,
+            redis_host=config.REDIS_HOST,
+            redis_port=config.REDIS_PORT,
+            now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        )
+
     return render_template_string(
         ADMIN_TEMPLATE,
         stats=stats,
@@ -898,6 +908,55 @@ ADMIN_LOGIN_TEMPLATE = """
     </form>
     <div class="hint">令牌在 .env 文件的 ADMIN_TOKEN 中配置</div>
 </div>
+</body>
+</html>
+"""
+
+# ---------- Redis 连接错误页面 ----------
+ADMIN_REDIS_ERROR_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis 未就绪 - WiFiDog AuthServer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #333; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .card { background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); padding: 48px 40px; max-width: 560px; width: 90%; text-align: center; }
+        .icon { font-size: 56px; margin-bottom: 16px; }
+        h1 { font-size: 22px; color: #e74c3c; margin-bottom: 8px; }
+        .sub { font-size: 14px; color: #888; margin-bottom: 28px; }
+        .info-box { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 16px; text-align: left; font-size: 13px; line-height: 1.8; margin-bottom: 24px; }
+        .info-box code { background: #fce4c3; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+        .btn { display: inline-block; background: #3498db; color: #fff; text-decoration: none; padding: 10px 24px; border-radius: 6px; font-size: 14px; margin: 0 6px; }
+        .btn:hover { background: #2980b9; }
+        .footer { font-size: 12px; color: #aaa; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">[!]</div>
+        <h1>Redis 无法连接</h1>
+        <p class="sub">认证服务器无法读取设备/用户数据</p>
+        <div class="info-box">
+            <p><strong>错误详情:</strong> {{ stats.error_msg }}</p>
+            <p><strong>目标地址:</strong> <code>{{ redis_host }}:{{ redis_port }}</code></p>
+            <p><strong>时间:</strong> {{ now }}</p>
+            <hr style="margin:10px 0;border-color:#ffc107">
+            <p><strong>请尝试:</strong></p>
+            <ol style="padding-left:18px">
+                <li>确保 Redis 服务已启动（Windows: 双击 <code>redis\\redis-server.exe</code>）</li>
+                <li>检查 <code>.env</code> 中的 <code>REDIS_HOST</code> 和 <code>REDIS_PORT</code> 配置</li>
+                <li>将 Redis 绿色版放入程序目录的 <code>redis/</code> 子文件夹后进行自动启动</li>
+            </ol>
+        </div>
+        <div>
+            <a href="/admin" class="btn">重试连接</a>
+            <a href="/admin/logout" class="btn" style="background:#95a5a6">退出管理</a>
+        </div>
+        <p class="footer">WiFiDog AuthServer — 管理面板已就绪，但 Redis 数据存储不可用</p>
+    </div>
 </body>
 </html>
 """

@@ -341,7 +341,22 @@ class DeviceManager:
         """
         获取全局统计信息
         返回: dict with total_devices, total_users, stale_count, etc.
+        如果 Redis 不可用，返回带 error 标记的字典
         """
+        try:
+            return self._get_global_stats_inner()
+        except redis.exceptions.ConnectionError as e:
+            return {
+                'error': True,
+                'error_msg': f"Redis 连接失败: {e}",
+                'total_devices': 0,
+                'total_users': 0,
+                'stale_count': 0,
+                'default_idle_timeout_hours': self.default_idle_timeout_hours,
+                'default_max_devices': self.default_max_devices,
+            }
+
+    def _get_global_stats_inner(self):
         now = int(time.time())
         total_devices = 0
         total_users = 0

@@ -47,7 +47,7 @@ def authenticate(username, password):
         search_conn = Connection(
             srv,
             user=config.AD_BIND_DN,
-            pasword=config.AD_BIND_PASSWORD,
+            password=config.AD_BIND_PASSWORD,
             auto_bind=True,
             read_only=True,
         )
@@ -105,7 +105,7 @@ def authenticate(username, password):
         user_conn = Connection(
             srv,
             user=user_dn,
-            pasword=password,
+            password=password,
             auto_bind=True,
         )
         print(f"[ADAuth] 认证成功: user_dn={user_dn}")
@@ -126,7 +126,7 @@ def test_connection():
         conn = Connection(
             srv,
             user=config.AD_BIND_DN,
-            pasword=config.AD_BIND_PASSWORD,
+            password=config.AD_BIND_PASSWORD,
             auto_bind=True,
         )
         info = srv.info
