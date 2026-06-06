@@ -140,6 +140,14 @@ jobs:
           ls -lh artifacts/
           echo "============================"
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum *.zip > SHA256SUMS.txt
+          echo "=== SHA256 Checksums ==="
+          cat SHA256SUMS.txt
+          echo "=========================="
+
       - name: Publish Release (continuous / tag)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -158,6 +166,7 @@ jobs:
             # --latest：设为仓库最新版本
             gh release create "$TAG_NAME" \
               artifacts/*.zip \
+              artifacts/SHA256SUMS.txt \
               --title "$TAG_NAME" \
               --generate-notes \
               --latest
@@ -184,6 +193,7 @@ jobs:
             SHORT_SHA="${GITHUB_SHA:0:7}"
             gh release create continuous \
               artifacts/*.zip \
+              artifacts/SHA256SUMS.txt \
               --prerelease \
               --title "Continuous Build (${SHORT_SHA})" \
               --notes "Automatically built from commit \`${GITHUB_SHA}\` on branch \`${{ github.ref_name }}\`.
