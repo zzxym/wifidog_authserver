@@ -67,6 +67,24 @@ def _find_redis_executable():
     return None
 
 
+def _parse_redis_dir(redis_conf_path):
+    """从 redis.conf 中解析 dir 指令，返回绝对路径"""
+    default = BINARY_DIR / 'redis' / 'redis_data'
+    try:
+        for line in redis_conf_path.read_text(encoding='utf-8').splitlines():
+            stripped = line.strip()
+            if stripped.startswith('dir '):
+                d = stripped[4:].strip()
+                p = Path(d)
+                if p.is_absolute():
+                    return p
+                # 相对路径：相对于 BINARY_DIR（Redis 的 cwd）
+                return (BINARY_DIR / p).resolve()
+    except Exception:
+        pass
+    return default
+
+
 def _check_redis_alive(host='127.0.0.1', port=6379):
     """检查 Redis 是否已运行"""
     try:
@@ -83,14 +101,18 @@ def _start_embedded_redis(redis_exe):
     """启动内嵌 Redis 进程"""
     global _redis_process
     try:
-        # 数据目录
-        data_dir = BINARY_DIR / config.REDIS_DATA_DIR
-        data_dir.mkdir(parents=True, exist_ok=True)
-
         # 配置文件
         config_file = BINARY_DIR / config.REDIS_CONFIG_FILE
+
+        # 确定数据目录：优先从已有 redis.conf 中读取 dir，否则默认 redis/redis_data
+        if config_file.exists():
+            data_dir = _parse_redis_dir(config_file)
+        else:
+            data_dir = BINARY_DIR / config.REDIS_DATA_DIR
+        data_dir.mkdir(parents=True, exist_ok=True)
+
         if not config_file.exists():
-            # 创建默认配置文件
+            # 创建默认配置文件（使用绝对路径，不受 cwd 影响）
             redis_conf = f"""# WiFiDog AuthServer - Redis 绿色部署配置
 bind 127.0.0.1
 port {config.REDIS_PORT}
@@ -910,7 +932,7 @@ LOGIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WiFi 网络认证</title>
+    <title>晓林无线认证-网络登录</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -944,7 +966,7 @@ LOGIN_TEMPLATE = """
         <input type="password" name="password" placeholder="密码" required>
         <button type="submit">登 录</button>
     </form>
-    <div class="footer">企业WiFi认证系统</div>
+    <div class="footer">晓林WiFi认证系统</div>
 </div>
 </body>
 </html>
@@ -957,7 +979,7 @@ PORTAL_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>认证成功</title>
+    <title>晓林无线认证-认证成功</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -991,7 +1013,7 @@ MANAGE_LOGIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>设备管理 - 登录</title>
+    <title>晓林无线认证-设备管理登录</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -1105,7 +1127,7 @@ ADMIN_LOGIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理员登录</title>
+    <title>晓林无线认证-管理员登录</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #1565c0 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -1144,7 +1166,7 @@ ADMIN_REDIS_ERROR_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Redis 未就绪 - WiFiDog AuthServer</title>
+    <title>晓林无线认证-系统维护中</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f7fa; color: #333; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
@@ -1237,7 +1259,7 @@ ADMIN_TEMPLATE = """
 </head>
 <body>
 <div class="topbar">
-    <h1>🔧 WiFiDog 管理后台</h1>
+    <h1>🔧 无线认证管理后台</h1>
     <div>
         <span style="font-size:12px;color:rgba(255,255,255,0.7);margin-right:16px;">
             认证模式: {{ auth_mode }}
@@ -1328,7 +1350,7 @@ ADMIN_USERS_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>用户管理 - 管理后台</title>
+    <title>晓林无线认证-用户管理</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
@@ -1414,7 +1436,7 @@ ADMIN_USER_DETAIL_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>用户详情 - 管理后台</title>
+    <title>晓林无线认证-用户详情</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
@@ -1533,7 +1555,7 @@ ADMIN_LOCAL_USERS_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>本地用户管理 - 管理后台</title>
+    <title>晓林无线认证-本地用户管理</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
@@ -1678,7 +1700,7 @@ ADMIN_LOCAL_USER_FORM_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% if action == 'create' %}创建用户{% else %}编辑用户{% endif %} - 管理后台</title>
+    <title>晓林无线认证-{% if action == 'create' %}创建用户{% else %}编辑用户{% endif %}</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
@@ -1772,7 +1794,7 @@ ADMIN_LOCAL_USER_FORM_TEMPLATE = """
 MESSAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><title>认证消息</title>
+<head><meta charset="UTF-8"><title>晓林无线认证-提示</title>
 <style>body{font-family:'Microsoft YaHei',Arial,sans-serif;background:#f5f5f5;display:flex;align-items:center;justify-content:center;min-height:100vh;}
 .container{background:white;padding:40px;border-radius:12px;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,0.1);}
 h2{color:#cc0000;}</style></head>
@@ -1804,4 +1826,6 @@ if __name__ == '__main__':
 
     init_scheduler()
 
-    app.run(host=config.FLASK_HOST, port=config.FLASK_PORT, debug=config.FLASK_DEBUG)
+    # 生产环境使用 Waitress WSGI 服务器
+    from waitress import serve
+    serve(app, host=config.FLASK_HOST, port=config.FLASK_PORT)

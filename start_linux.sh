@@ -39,6 +39,6 @@ else
 fi
 
 echo ""
-echo "[3/3] 启动 AuthServer..."
+echo "[3/3] 启动 AuthServer (Gunicorn)..."
 echo ""
-./wifidog-auth
+gunicorn -w 4 -b 0.0.0.0:5000 app:app

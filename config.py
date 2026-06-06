@@ -14,8 +14,8 @@
   ├── redis/                 ← Redis 绿色版（Windows需要）
   │   ├── redis-server.exe
   │   ├── redis-cli.exe
-  │   └── redis.conf
-  ├── redis_data/            ← Redis 持久化数据（自动创建）
+  │   ├── redis.conf
+  │   └── redis_data/        ← Redis 持久化数据（自动创建）
   ├── start.bat / start.sh   ← 启动脚本
   └── README.txt             ← 部署说明
 """
@@ -103,8 +103,8 @@ class Config:
     REDIS_AUTO_START = os.getenv('REDIS_AUTO_START', 'True').lower() == 'true'
     # Redis 可执行文件路径（相对于程序根目录，默认 redis/redis-server）
     REDIS_EXECUTABLE = os.getenv('REDIS_EXECUTABLE', 'redis/redis-server')
-    # Redis 数据持久化目录（相对于程序根目录，默认 redis_data）
-    REDIS_DATA_DIR = os.getenv('REDIS_DATA_DIR', 'redis_data')
+    # Redis 数据持久化目录（相对于程序根目录，默认 redis/redis_data）
+    REDIS_DATA_DIR = os.getenv('REDIS_DATA_DIR', 'redis/redis_data')
     # Redis 配置文件路径（相对于程序根目录，默认 redis/redis.conf）
     REDIS_CONFIG_FILE = os.getenv('REDIS_CONFIG_FILE', 'redis/redis.conf')
 

@@ -7,10 +7,10 @@ WiFiDog AuthServer 打包部署工具
   wifidog-authserver-windows/
   ├── wifidog-auth.exe         ← PyInstaller onedir 主程序
   ├── .env.template            ← 配置模板
-  ├── redis/                   ← Redis 绿色版
+  ├── redis/                   ← Redis 绿色版（含数据和日志）
   │   ├── redis-server.exe
-  │   └── redis.conf
-  ├── redis_data/              ← Redis 数据（自动创建）
+  │   ├── redis.conf
+  │   └── redis_data/          ← Redis 持久化数据
   ├── start.bat                ← Windows 启动脚本
   └── README.txt               ← 部署说明
 
@@ -19,8 +19,8 @@ WiFiDog AuthServer 打包部署工具
   ├── .env.template
   ├── redis/
   │   ├── redis-server         ← Linux 绿色版 Redis
-  │   └── redis.conf
-  ├── redis_data/
+  │   ├── redis.conf
+  │   └── redis_data/          ← Redis 持久化数据
   ├── start.sh                 ← Linux 启动脚本
   └── README.txt
 
@@ -160,8 +160,8 @@ def download_redis_windows(dest_dir):
             conf_content = """# Redis 绿色部署配置
 bind 127.0.0.1
 port 6379
-dir ../redis_data
-logfile ../redis_data/redis.log
+dir ./redis/redis_data
+logfile redis.log
 save 900 1
 save 300 10
 save 60 10000
@@ -201,8 +201,8 @@ def bundle_redis_linux(dest_dir):
     conf_content = f"""# Redis 配置 - WiFiDog AuthServer 绿色部署
 bind 127.0.0.1
 port {os.getenv('REDIS_PORT', '6379')}
-dir ../redis_data
-logfile ../redis_data/redis.log
+dir ./redis/redis_data
+logfile redis.log
 save 900 1
 save 300 10
 save 60 10000
@@ -242,12 +242,17 @@ ENV_TEMPLATE = """# ============================================
 # 将此文件重命名为 .env（去掉 .template 后缀）
 # ============================================
 
-# ----- AD域配置 -----
+# ----- AD域配置（AUTH_MODE=ad 时必填） -----
 AD_SERVER=ldap://192.168.1.10
-AD_BIND_DN=cn=wifidog_svc,cn=Users,dc=yourdomain,dc=com
+AD_BIND_DN=cn=wifidog_svc,cn=Users,dc=domain,dc=com
 AD_BIND_PASSWORD=your_service_password
-AD_BASE_DN=dc=yourdomain,dc=com
+AD_BASE_DN=dc=domain,dc=com
+AD_USER_BASE_DN=ou=Users,dc=domain,dc=com
 AD_USER_FILTER_ATTR=sAMAccountName
+AD_USER_FILTER=(sAMAccountName={username})
+AD_USERNAME_ATTR=sAMAccountName
+AD_EMAIL_ATTR=mail
+AD_DISPLAY_NAME_ATTR=displayName
 
 # ----- AuthServer 配置 -----
 AUTHSERVER_HOST=0.0.0.0
@@ -258,33 +263,48 @@ AUTHSERVER_URL=http://192.168.1.100:5000
 # Redis 连接地址
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
+REDIS_PASSWORD=
+REDIS_DB=0
 # 是否自动启动本地 Redis（绿色部署使用，默认 True）
 REDIS_AUTO_START=True
 # Redis 可执行文件相对路径
 REDIS_EXECUTABLE=redis/redis-server
 # Redis 数据目录
-REDIS_DATA_DIR=redis_data
+REDIS_DATA_DIR=redis/redis_data
+# Redis 配置文件路径
+REDIS_CONFIG_FILE=redis/redis.conf
 
 # ----- WiFiDog 配置 -----
 TOKEN_EXPIRE_SECONDS=28800
 CHECK_INTERVAL=60
+WIFIDOG_GATEWAY_ID=default
 
 # ----- 设备管理 -----
 DEFAULT_MAX_DEVICES=3
 
+# ----- 心跳超时 -----
+DEFAULT_IDLE_TIMEOUT_HOURS=168
+
 # ----- 自动清理 -----
-DEVICE_IDLE_TIMEOUT_HOURS=168
-DEVICE_CLEANUP_CRON=0 0 * * *
 DEVICE_CLEANUP_ENABLED=True
+DEVICE_CLEANUP_CRON=0 0 * * *
+DEVICE_CLEANUP_IDLE_HOURS=0
+
+# ----- 认证模式 -----
+# "ad" = AD域LDAP, "local" = 本地用户(SQLite)
+AUTH_MODE=ad
+
+# 本地认证模式专用：本地用户数据库路径
+LOCAL_DB_PATH=local_users.db
 
 # ----- 管理令牌 -----
-# ⚠️ 必须修改！用于管理员网页登录
+# 必须修改！用于管理员网页登录
 ADMIN_TOKEN=change_this_to_a_strong_random_token
 """
 
 
 README_WINDOWS = """=======================================================
-  WiFiDog AuthServer - Windows 绿色部署版
+  晓林无线认证 - WiFiDog AuthServer
 =======================================================
 
 📋 部署步骤：
@@ -314,7 +334,7 @@ README_WINDOWS = """=======================================================
   ├── wifidog-auth.exe      ← 主程序
   ├── .env.template         ← 配置模板
   ├── redis/                ← Redis 绿色版（Windows x64）
-  ├── redis_data/           ← Redis 持久化数据
+  │   └── redis_data/       ← Redis 持久化数据
   └── start.bat             ← 启动脚本
 
 ⚠️  依赖：
@@ -335,12 +355,12 @@ README_WINDOWS = """=======================================================
 
   Q: 如何查看日志？
   A: 程序日志输出到控制台窗口（请勿关闭）
-     Redis 日志在 redis_data/redis.log
+     Redis 日志在 redis/redis_data/redis.log
 """
 
 
 README_LINUX = """=======================================================
-  WiFiDog AuthServer - Linux 绿色部署版
+  晓林无线认证 - WiFiDog AuthServer
 =======================================================
 
 📋 部署步骤：
@@ -374,7 +394,7 @@ README_LINUX = """=======================================================
   ├── wifidog-auth           ← 主程序
   ├── .env.template
   ├── redis/                 ← Redis 配置
-  ├── redis_data/
+  │   └── redis_data/        ← Redis 持久化数据
   └── start.sh               ← 启动脚本
 
 🆘 常见问题：
@@ -443,7 +463,7 @@ def build_with_pyinstaller(for_platform):
     ])
 
     # 收集关键包
-    for pkg in ['flask', 'ldap3', 'redis', 'apscheduler', 'dotenv']:
+    for pkg in ['flask', 'ldap3', 'redis', 'apscheduler', 'dotenv', 'ssl', 'waitress']:
         cmd.extend(['--collect-submodules', pkg])
 
     # 隐藏导入
@@ -453,6 +473,12 @@ def build_with_pyinstaller(for_platform):
         'apscheduler.schedulers.background',
         'apscheduler.triggers', 'apscheduler.triggers.cron',
         'dotenv', 'python_dotenv',
+        'waitress',
+        # SSL/TLS 支持（ldap3 需要）
+        'ssl', '_ssl', '_socket',
+        'certifi', 'cryptography',
+        # ldap3 子模块
+        'ldap3.core.tls', 'ldap3.core.exceptions',
     ]
     for imp in hidden:
         cmd.extend(['--hidden-import', imp])
@@ -546,10 +572,10 @@ def assemble_package(for_platform):
     env_tpl.write_text(ENV_TEMPLATE, encoding='utf-8')
     print(f"  ✅ .env.template 已创建")
 
-    # 3. 创建 redis_data 目录
-    redis_data = package_dir / 'redis_data'
+    # 3. 创建 redis/redis_data 目录
+    redis_data = package_dir / 'redis' / 'redis_data'
     redis_data.mkdir(parents=True, exist_ok=True)
-    print(f"  ✅ redis_data/ 已创建")
+    print(f"  ✅ redis/redis_data/ 已创建")
 
     # 4a. 处理 Redis (Windows: 下载绿色版)
     if for_platform == 'windows':
@@ -565,7 +591,7 @@ def assemble_package(for_platform):
 chcp 65001 >nul
 title WiFiDog AuthServer
 echo =============================================
-echo   WiFiDog AuthServer - Windows 绿色部署版
+echo   晓林无线认证 - WiFiDog AuthServer
 echo =============================================
 echo.
 cd /d "%~dp0"
@@ -594,7 +620,7 @@ pause
         start_sh = package_dir / 'start.sh'
         start_sh.write_text("""#!/bin/bash
 echo "============================================"
-echo "  WiFiDog AuthServer - Linux 绿色部署版"
+echo "  晓林无线认证 - WiFiDog AuthServer"
 echo "============================================"
 echo ""
 

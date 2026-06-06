@@ -42,8 +42,8 @@ if not exist ".env" (
 )
 
 echo.
-echo [3/3] 启动 AuthServer...
+echo [3/3] 启动 AuthServer (Waitress)...
 echo.
-wifidog-auth.exe
+waitress-serve --host=0.0.0.0 --port=5000 app:app
 
 pause
