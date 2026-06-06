@@ -403,6 +403,14 @@ def build_with_pyinstaller(for_platform):
     print(f"  [debug] Platform: {for_platform}")
     print(f"  [debug] sys.platform: {sys.platform}")
 
+    # 检查 PyInstaller 是否可用
+    try:
+        import PyInstaller
+        print(f"  [debug] PyInstaller 版本: {PyInstaller.__version__ if hasattr(PyInstaller, '__version__') else '(unknown)'}")
+    except ImportError:
+        print("  [错误] PyInstaller 未安装！")
+        return False
+
     # 确保 api-ms-win-* 等系统 DLL 不被包含（这些是系统文件）
     print("\n  执行 PyInstaller onedir 打包...")
 
@@ -442,13 +450,20 @@ def build_with_pyinstaller(for_platform):
     # 添加额外搜索路径
     extra_paths = []
     # managed Python venv
-    venv_sp = Path(sys.executable).parent.parent.parent / 'envs' / 'default' / 'Lib' / 'site-packages'
-    if venv_sp.exists():
-        extra_paths.append(str(venv_sp))
+    try:
+        venv_sp = Path(sys.executable).parent.parent.parent / 'envs' / 'default' / 'Lib' / 'site-packages'
+        if venv_sp.exists():
+            extra_paths.append(str(venv_sp))
+    except Exception as e:
+        print(f"  [debug] venv site-packages check failed: {e}")
+
     # 用户 site-packages
-    import site
-    for sp in site.getsitepackages():
-        extra_paths.append(sp)
+    try:
+        import site
+        for sp in site.getsitepackages():
+            extra_paths.append(sp)
+    except Exception as e:
+        print(f"  [debug] site.getsitepackages() failed: {e}")
     for sp in set(extra_paths):
         if Path(sp).exists():
             cmd.extend(['--paths', sp])
@@ -457,7 +472,19 @@ def build_with_pyinstaller(for_platform):
 
     print(f"  [debug] PyInstaller cmd: {' '.join(str(c) for c in cmd)}")
 
-    result = subprocess.run(cmd, cwd=str(proj))
+    try:
+        result = subprocess.run(cmd, cwd=str(proj))
+    except FileNotFoundError:
+        print(f"\n  [致命错误] 找不到可执行文件: {sys.executable}")
+        import traceback
+        traceback.print_exc()
+        return False
+    except Exception as e:
+        print(f"\n  [致命错误] subprocess.run 异常:")
+        import traceback
+        traceback.print_exc()
+        return False
+
     if result.returncode != 0:
         print(f"\n  [错误] PyInstaller 失败，返回码: {result.returncode}")
         print(f"  [提示] 请检查上方 PyInstaller 输出信息")
