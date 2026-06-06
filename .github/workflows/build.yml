@@ -1,0 +1,216 @@
+name: Build and Release
+
+# 触发条件：
+# 1. 推送到 master/main 分支 → 构建并发布 continuous 预发布
+# 2. 推送 v* 标签 → 构建并发布正式版本
+# 3. 手动触发（workflow_dispatch）
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# 全局权限：构建任务只读，发布任务需要写权限
+permissions:
+  contents: read
+
+# 全局环境变量
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================================
+  #  Job 1: 构建（矩阵并行：Windows + Linux）
+  # ============================================================
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false                       # 一个平台失败不影响另一个
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            artifact_name: wifidog-authserver-linux
+          - os: windows-latest
+            platform: windows
+            artifact_name: wifidog-authserver-windows
+
+    steps:
+      - name: Checkout 源码
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      #  Python 环境
+      # ----------------------------------------------------------
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # ----------------------------------------------------------
+      #  安装 Python 依赖
+      # ----------------------------------------------------------
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      # ----------------------------------------------------------
+      #  Linux 专用：安装 Redis（用于打包进绿色部署包）
+      # ----------------------------------------------------------
+      - name: Install Redis (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server
+
+      # ----------------------------------------------------------
+      #  执行打包（build.py）
+      # ----------------------------------------------------------
+      - name: Run build.py
+        shell: bash
+        run: python build.py --platform ${{ matrix.platform }}
+
+      # ----------------------------------------------------------
+      #  Linux 专用：将 redis-server 二进制文件复制进部署包
+      #  (build.py 只生成配置文件，不打包二进制)
+      # ----------------------------------------------------------
+      - name: Bundle Redis binary (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          REDIS_SERVER_BIN=$(which redis-server)
+          REDIS_CLI_BIN=$(which redis-cli)
+          echo "Redis server: $REDIS_SERVER_BIN"
+          echo "Redis CLI:    $REDIS_CLI_BIN"
+          cp "$REDIS_SERVER_BIN" "dist/${{ matrix.artifact_name }}/redis/redis-server"
+          cp "$REDIS_CLI_BIN" "dist/${{ matrix.artifact_name }}/redis/redis-cli"
+          chmod +x "dist/${{ matrix.artifact_name }}/redis/redis-server"
+          chmod +x "dist/${{ matrix.artifact_name }}/redis/redis-cli"
+          echo "Bundled redis-server: $(file dist/${{ matrix.artifact_name }}/redis/redis-server)"
+
+      # ----------------------------------------------------------
+      #  将部署包文件夹压缩为 ZIP
+      # ----------------------------------------------------------
+      - name: Create ZIP archive
+        shell: bash
+        run: |
+          cd dist
+          python -c "import shutil; shutil.make_archive('${{ matrix.artifact_name }}', 'zip', '${{ matrix.artifact_name }}')"
+          echo "ZIP archive created:"
+          ls -lh "${{ matrix.artifact_name }}.zip"
+
+      # ----------------------------------------------------------
+      #  上传构建产物（供 release job 使用）
+      # ----------------------------------------------------------
+      - name: Upload build artifact
+        if: always()        # 即使前面步骤失败也尝试上传（方便调试）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}.zip
+          retention-days: 7
+          if-no-files-found: error    # ZIP 不存在则报错
+
+  # ============================================================
+  #  Job 2: 发布到 GitHub Releases
+  #  只在 build 全部成功后运行
+  # ============================================================
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    # 发布需要写权限
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true      # 合并到同一目录
+
+      - name: List downloaded artifacts
+        run: |
+          echo "=== Downloaded artifacts ==="
+          ls -lh artifacts/
+          echo "============================"
+
+      - name: Publish Release (continuous / tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # 判断触发类型：标签推送 vs 分支推送
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # ====================================================
+            #  标签推送：创建正式版本 Release
+            # ====================================================
+            TAG_NAME="${{ github.ref_name }}"
+            echo "=== Creating versioned release: $TAG_NAME ==="
+
+            # 使用 softprops/action-gh-release 风格：直接用 gh 创建
+            # --generate-notes：自动从 commit 生成 Release Notes
+            # --latest：设为仓库最新版本
+            gh release create "$TAG_NAME" \
+              artifacts/*.zip \
+              --title "$TAG_NAME" \
+              --generate-notes \
+              --latest
+
+            echo "Release created: https://github.com/${{ github.repository }}/releases/tag/$TAG_NAME"
+
+          else
+            # ====================================================
+            #  分支推送（master/main）：更新 continuous 预发布
+            #  每次推送都删除旧 continuous 并重建
+            # ====================================================
+            echo "=== Creating/updating continuous pre-release ==="
+
+            # 删除旧的 continuous release（如果存在）
+            gh release delete continuous \
+              --yes \
+              --cleanup-tag \
+              2>/dev/null || echo "No existing continuous release to delete"
+
+            # 等待 GitHub API 同步
+            sleep 3
+
+            # 创建新的 continuous release
+            SHORT_SHA="${GITHUB_SHA:0:7}"
+            gh release create continuous \
+              artifacts/*.zip \
+              --prerelease \
+              --title "Continuous Build (${SHORT_SHA})" \
+              --notes "Automatically built from commit \`${GITHUB_SHA}\` on branch \`${{ github.ref_name }}\`.
+
+          **This is a pre-release** — it is re-created on every push to \`${{ github.ref_name }}\`.
+
+          ## 下载
+          - **Windows x64**: \`wifidog-authserver-windows.zip\`
+          - **Linux x64**:   \`wifidog-authserver-linux.zip\`
+
+          ## 安装说明
+          See [README](https://github.com/${{ github.repository }}) for deployment instructions."
+
+            echo "Continuous release updated: https://github.com/${{ github.repository }}/releases/tag/continuous"
+          fi
+
+      # ----------------------------------------------------------
+      #  发布失败时的提示
+      # ----------------------------------------------------------
+      - name: Release failed notification
+        if: failure()
+        run: |
+          echo "==============================================="
+          echo "  Release 发布失败！"
+          echo "  请检查："
+          echo "  1. artifacts/ 目录中是否有 .zip 文件"
+          echo "  2. GITHUB_TOKEN 权限是否正确"
+          echo "  3. 查看上方日志获取详细错误信息"
+          echo "==============================================="
+          exit 1
