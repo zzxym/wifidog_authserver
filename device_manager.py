@@ -32,7 +32,8 @@ class DeviceManager:
             port=config.REDIS_PORT,
             password=config.REDIS_PASSWORD,
             db=config.REDIS_DB,
-            decode_responses=True
+            decode_responses=True,
+            protocol=2  # 使用 RESP2 协议兼容旧版 Redis
         )
         self.default_max_devices = config.DEFAULT_MAX_DEVICES
         self.default_idle_timeout_hours = config.DEFAULT_IDLE_TIMEOUT_HOURS

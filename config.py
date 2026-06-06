@@ -82,7 +82,12 @@ class Config:
     AD_BIND_PASSWORD = os.getenv('AD_BIND_PASSWORD', '')
     AD_BASE_DN = os.getenv('AD_BASE_DN', 'dc=domain,dc=com')
     AD_USER_FILTER_ATTR = os.getenv('AD_USER_FILTER_ATTR', 'sAMAccountName')
+    AD_USER_FILTER = os.getenv(
+        'AD_USER_FILTER',
+        f'({AD_USER_FILTER_ATTR}={{username}})'
+    )
     AD_SEARCH_BASE = os.getenv('AD_SEARCH_BASE', '')
+    AD_USER_BASE_DN = os.getenv('AD_USER_BASE_DN', '') or AD_SEARCH_BASE or AD_BASE_DN
     AD_USERNAME_ATTR = os.getenv('AD_USERNAME_ATTR', 'sAMAccountName')
     AD_EMAIL_ATTR = os.getenv('AD_EMAIL_ATTR', 'mail')
     AD_DISPLAY_NAME_ATTR = os.getenv('AD_DISPLAY_NAME_ATTR', 'displayName')
@@ -119,6 +124,17 @@ class Config:
     DEVICE_CLEANUP_ENABLED = os.getenv('DEVICE_CLEANUP_ENABLED', 'True').lower() == 'true'
     DEVICE_CLEANUP_CRON = os.getenv('DEVICE_CLEANUP_CRON', '0 0 * * *')
     DEVICE_CLEANUP_IDLE_HOURS = int(os.getenv('DEVICE_CLEANUP_IDLE_HOURS', 0))
+
+    # ========== 认证模式 ==========
+    # 认证模式: "ad" = AD域LDAP认证, "local" = 本地用户认证(SQLite)
+    AUTH_MODE = os.getenv('AUTH_MODE', 'ad').strip().lower()
+    if AUTH_MODE not in ('ad', 'local'):
+        print(f"[Config] 警告: 未知的AUTH_MODE '{AUTH_MODE}'，回退为 'ad'")
+        AUTH_MODE = 'ad'
+
+    # 本地认证配置
+    # 本地用户数据库路径（相对于程序根目录，默认 local_users.db）
+    LOCAL_DB_PATH = os.getenv('LOCAL_DB_PATH', 'local_users.db')
 
     # ========== 管理安全 ==========
     ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '')

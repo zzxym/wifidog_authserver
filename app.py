@@ -1,11 +1,13 @@
 """
-WiFiDog AuthServer - AD域认证版
-支持AD域账号认证、设备数量限制、心跳超时自动清除、定时清理僵尸设备
+WiFiDog AuthServer - 双模式认证版
+支持 AD域LDAP认证 与 本地用户认证(SQLite) 灵活切换
 
-新增功能：
+功能：
+  - 双模式认证：AUTH_MODE=ad(AD域) / AUTH_MODE=local(本地用户)
+  - 设备数量限制、心跳超时自动清除、定时清理僵尸设备
   - 按账号心跳超时清除（全局默认值 + 按账号单独设置）
   - 全局定时清理任务（独立开关，cron表达式配置）
-  - 管理员UI（直观简洁的Web管理界面）
+  - 管理员UI（直观简洁的Web管理界面 + 本地用户管理）
 """
 
 import os
@@ -28,6 +30,7 @@ from apscheduler.triggers.cron import CronTrigger
 from config import config, BINARY_DIR
 from ad_auth import ad_auth
 from device_manager import device_manager
+from local_auth import local_auth
 
 # ==================== Redis 自动启动（绿色部署） ====================
 
@@ -276,8 +279,46 @@ def get_redis_client():
         port=config.REDIS_PORT,
         password=config.REDIS_PASSWORD,
         db=config.REDIS_DB,
-        decode_responses=True
+        decode_responses=True,
+        protocol=2  # 使用 RESP2 协议兼容旧版 Redis（避免 HELLO 命令错误）
     )
+
+
+def authenticate_user(username, password):
+    """
+    统一认证入口：根据 AUTH_MODE 自动选择 AD 或本地认证
+
+    参数:
+        username: 用户名
+        password: 明文密码
+
+    返回:
+        (True, user_info_dict)  → 认证成功
+        (False, None)           → 认证失败
+    """
+    if config.AUTH_MODE == 'local':
+        success, user_info = local_auth.authenticate(username, password)
+        if success:
+            print(f"[Auth] 本地认证成功: {username}")
+        else:
+            print(f"[Auth] 本地认证失败: {username}")
+        return success, user_info
+    else:
+        # AD 模式（默认）
+        success, user_info = ad_auth.authenticate(username, password)
+        return success, user_info
+
+
+def get_auth_mode_label():
+    """获取当前认证模式的显示标签"""
+    return '本地账号' if config.AUTH_MODE == 'local' else '域账号'
+
+
+def get_auth_description():
+    """获取当前认证模式的描述文字（用于登录页提示）"""
+    if config.AUTH_MODE == 'local':
+        return '本地用户账号登录'
+    return '企业AD域账号登录'
 
 
 # ==================== WiFiDog 协议接口 ====================
@@ -308,13 +349,15 @@ def login():
                 max_devices=config.DEFAULT_MAX_DEVICES
             )
 
-        success, user_info = ad_auth.authenticate(username, password)
+        success, user_info = authenticate_user(username, password)
         if not success:
             return render_template_string(
                 LOGIN_TEMPLATE,
                 gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
-                mac=mac, url=url, error="用户名或密码错误，请使用域账号登录",
-                max_devices=config.DEFAULT_MAX_DEVICES
+                mac=mac, url=url,
+                error=f"用户名或密码错误，请使用{get_auth_mode_label()}登录",
+                max_devices=config.DEFAULT_MAX_DEVICES,
+                auth_hint=get_auth_description()
             )
 
         token = generate_token()
@@ -347,7 +390,8 @@ def login():
         LOGIN_TEMPLATE,
         gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
         mac=mac, url=url, error=None,
-        max_devices=config.DEFAULT_MAX_DEVICES
+        max_devices=config.DEFAULT_MAX_DEVICES,
+        auth_hint=get_auth_description()
     )
 
 
@@ -435,10 +479,18 @@ def manage():
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '')
         if not username or not password:
-            return render_template_string(MANAGE_LOGIN_TEMPLATE, error="请输入用户名和密码")
-        success, _ = ad_auth.authenticate(username, password)
+            return render_template_string(
+                MANAGE_LOGIN_TEMPLATE,
+                error="请输入用户名和密码",
+                auth_hint=get_auth_description()
+            )
+        success, _ = authenticate_user(username, password)
         if not success:
-            return render_template_string(MANAGE_LOGIN_TEMPLATE, error="用户名或密码错误")
+            return render_template_string(
+                MANAGE_LOGIN_TEMPLATE,
+                error="用户名或密码错误",
+                auth_hint=get_auth_description()
+            )
         session['manage_user'] = username
         print(f"[Manage] 用户[{username}]进入设备管理页面")
         return redirect('/manage')
@@ -465,7 +517,11 @@ def manage():
             max_devices=max_devices, current_count=len(devices),
         )
 
-    return render_template_string(MANAGE_LOGIN_TEMPLATE, error=None)
+    return render_template_string(
+        MANAGE_LOGIN_TEMPLATE,
+        error=None,
+        auth_hint=get_auth_description()
+    )
 
 
 # ==================== 管理员认证 ====================
@@ -494,7 +550,7 @@ def admin_login():
     return render_template_string(ADMIN_LOGIN_TEMPLATE, error=None)
 
 
-@app.route('/admin/logout', methods=['POST'])
+@app.route('/admin/logout', methods=['GET', 'POST'])
 def admin_logout():
     """管理员注销"""
     session.pop('admin_logged_in', None)
@@ -535,6 +591,7 @@ def admin_dashboard():
         config=config,
         next_cleanup=next_cleanup,
         now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        auth_mode=config.AUTH_MODE,
     )
 
 
@@ -592,6 +649,15 @@ def admin_user_detail(username):
             idle_h = device_manager.get_idle_timeout(username)
             cleaned, _ = device_manager.cleanup_stale_devices(idle_timeout_hours=idle_h)
             message = f"已清理 {username} 的 {cleaned} 个僵尸设备"
+
+        elif action == 'kick':
+            kick_token = request.form.get('kick_token', '')
+            if kick_token:
+                device_manager.remove_device(username, kick_token)
+                r = get_redis_client()
+                r.setex(f"kicked_token:{kick_token}", config.TOKEN_EXPIRE_SECONDS, "1")
+                message = f"已踢出设备 token={kick_token[:8]}..."
+                print(f"[Admin] 管理员踢出用户[{username}]设备 token={kick_token[:8]}...")
 
     # 获取用户详情
     devices = device_manager.get_user_devices(username)
@@ -676,6 +742,165 @@ def admin_cleanup():
     return redirect('/admin?msg=' + f'清理完成，共清理 {cleaned} 个僵尸设备')
 
 
+# ==================== 本地用户管理 API（仅 local 模式可用） ====================
+
+@app.route('/admin/local_users', methods=['GET', 'POST'])
+def admin_local_users():
+    """本地用户管理页面"""
+    if not check_admin_auth():
+        return redirect('/admin/login')
+
+    # 处理来自列表页的 POST 操作（切换启用/禁用、删除）
+    if request.method == 'POST':
+        action = request.form.get('action', '')
+        username = request.form.get('username', '').strip()
+        if username:
+            if action == 'toggle':
+                user = local_auth.get_user(username)
+                if user:
+                    new_enabled = not user['enabled']
+                    ok, msg = local_auth.update_user(username, enabled=new_enabled)
+                else:
+                    msg = '用户不存在'
+            elif action == 'delete':
+                ok, msg = local_auth.delete_user(username)
+            else:
+                msg = '未知操作'
+        else:
+            msg = '未指定用户'
+
+    page = request.args.get('page', 1, type=int)
+    search = request.args.get('search', '').strip()
+    result = local_auth.list_users(page=page, per_page=50, search=search)
+
+    return render_template_string(
+        ADMIN_LOCAL_USERS_TEMPLATE,
+        users=result['users'],
+        total=result['total'],
+        page=result['page'],
+        per_page=result['per_page'],
+        total_pages=result['total_pages'],
+        search=search,
+        auth_mode=config.AUTH_MODE,
+    )
+
+
+@app.route('/admin/local_users/create', methods=['GET', 'POST'])
+def admin_local_user_create():
+    """创建本地用户"""
+    if not check_admin_auth():
+        return redirect('/admin/login')
+
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        display_name = request.form.get('display_name', '').strip()
+        email = request.form.get('email', '').strip()
+        is_admin = request.form.get('is_admin') == '1'
+
+        ok, msg = local_auth.create_user(
+            username=username,
+            password=password,
+            display_name=display_name or username,
+            email=email,
+            is_admin=is_admin,
+        )
+        if ok:
+            return redirect(f'/admin/local_users?msg={msg}')
+        return render_template_string(
+            ADMIN_LOCAL_USER_FORM_TEMPLATE,
+            action='create', error=msg,
+            user={'username': username, 'display_name': display_name,
+                  'email': email, 'is_admin': is_admin, 'enabled': True},
+        )
+
+    return render_template_string(
+        ADMIN_LOCAL_USER_FORM_TEMPLATE,
+        action='create', error=None,
+        user={'username': '', 'display_name': '', 'email': '',
+              'is_admin': False, 'enabled': True},
+    )
+
+
+@app.route('/admin/local_users/<username>/edit', methods=['GET', 'POST'])
+def admin_local_user_edit(username):
+    """编辑本地用户"""
+    if not check_admin_auth():
+        return redirect('/admin/login')
+
+    user = local_auth.get_user(username)
+    if not user:
+        return redirect('/admin/local_users?msg=用户不存在')
+
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        display_name = request.form.get('display_name', '').strip()
+        email = request.form.get('email', '').strip()
+        enabled = request.form.get('enabled') == '1'
+        is_admin = request.form.get('is_admin') == '1'
+
+        kwargs = {
+            'display_name': display_name,
+            'email': email,
+            'enabled': enabled,
+            'is_admin': is_admin,
+        }
+        if password:
+            kwargs['password'] = password
+
+        ok, msg = local_auth.update_user(username, **kwargs)
+        if ok:
+            return redirect(f'/admin/local_users/{username}/edit?msg={msg}')
+        return render_template_string(
+            ADMIN_LOCAL_USER_FORM_TEMPLATE,
+            action='edit', error=msg,
+            user={**user, **kwargs},
+        )
+
+    return render_template_string(
+        ADMIN_LOCAL_USER_FORM_TEMPLATE,
+        action='edit', error=None,
+        user=user,
+    )
+
+
+@app.route('/admin/local_users/<username>/toggle', methods=['POST'])
+def admin_local_user_toggle(username):
+    """启用/禁用本地用户"""
+    if not check_admin_auth():
+        return redirect('/admin/login')
+
+    user = local_auth.get_user(username)
+    if not user:
+        return redirect('/admin/local_users?msg=用户不存在')
+
+    new_enabled = not user['enabled']
+    ok, msg = local_auth.update_user(username, enabled=new_enabled)
+    return redirect(f'/admin/local_users?msg={msg}')
+
+
+@app.route('/admin/local_users/<username>/delete', methods=['POST'])
+def admin_local_user_delete(username):
+    """删除本地用户"""
+    if not check_admin_auth():
+        return redirect('/admin/login')
+
+    ok, msg = local_auth.delete_user(username)
+    return redirect(f'/admin/local_users?msg={msg}')
+
+
+@app.route('/admin/api/local_users', methods=['GET'])
+def api_admin_local_users():
+    """获取本地用户列表（JSON API）"""
+    if not check_admin_auth():
+        return jsonify({'error': 'unauthorized'}), 401
+
+    page = request.args.get('page', 1, type=int)
+    search = request.args.get('search', '').strip()
+    result = local_auth.list_users(page=page, per_page=100, search=search)
+    return jsonify(result)
+
+
 # ==================== HTML模板 ====================
 
 # ---------- 用户登录页 ----------
@@ -704,7 +929,7 @@ LOGIN_TEMPLATE = """
 <body>
 <div class="container">
     <h2>🔐 WiFi 网络认证</h2>
-    <div class="subtitle">企业AD域账号登录</div>
+    <div class="subtitle">{{ auth_hint }}</div>
     <div class="note">⚠️ 每次连接WiFi均需重新登录。<br>每个账号最多允许 <b>{{ max_devices }}</b> 台设备同时在线。</div>
     {% if error %}
     <div class="error">{{ error }}</div>
@@ -715,8 +940,8 @@ LOGIN_TEMPLATE = """
         <input type="hidden" name="gw_id" value="{{ gw_id }}">
         <input type="hidden" name="mac" value="{{ mac }}">
         <input type="hidden" name="url" value="{{ url }}">
-        <input type="text" name="username" placeholder="域用户名" required autofocus>
-        <input type="password" name="password" placeholder="域密码" required>
+        <input type="text" name="username" placeholder="用户名" required autofocus>
+        <input type="password" name="password" placeholder="密码" required>
         <button type="submit">登 录</button>
     </form>
     <div class="footer">企业WiFi认证系统</div>
@@ -783,14 +1008,14 @@ MANAGE_LOGIN_TEMPLATE = """
 <body>
 <div class="container">
     <h2>设备管理登录</h2>
-    <div class="desc">使用AD域账号登录，管理您的在线设备</div>
+    <div class="desc">{{ auth_hint }}</div>
     {% if error %}
     <div class="error">{{ error }}</div>
     {% endif %}
     <form method="POST">
         <input type="hidden" name="action" value="login">
-        <input type="text" name="username" placeholder="域用户名" required autofocus>
-        <input type="password" name="password" placeholder="域密码" required>
+        <input type="text" name="username" placeholder="用户名" required autofocus>
+        <input type="password" name="password" placeholder="密码" required>
         <button type="submit">登 录</button>
     </form>
 </div>
@@ -1014,8 +1239,14 @@ ADMIN_TEMPLATE = """
 <div class="topbar">
     <h1>🔧 WiFiDog 管理后台</h1>
     <div>
-        <a href="/admin/users">用户管理 →</a>
-        <a href="/admin/logout" style="margin-left:20px;">退出登录</a>
+        <span style="font-size:12px;color:rgba(255,255,255,0.7);margin-right:16px;">
+            认证模式: {{ auth_mode }}
+        </span>
+        <a href="/admin/users">设备用户 →</a>
+        {% if auth_mode == 'local' %}
+        <a href="/admin/local_users" style="margin-left:14px;">本地用户 →</a>
+        {% endif %}
+        <a href="/admin/logout" style="margin-left:14px;">退出登录</a>
     </div>
 </div>
 
@@ -1075,11 +1306,14 @@ ADMIN_TEMPLATE = """
         </div>
     </div>
 
-    <!-- 最近活跃用户（简要）-->
+    <!-- 快捷操作 -->
     <div class="section">
         <h3>👥 快捷操作</h3>
         <div class="btn-row">
-            <a href="/admin/users" class="btn btn-primary">查看所有用户 →</a>
+            <a href="/admin/users" class="btn btn-primary">设备用户管理 →</a>
+            {% if auth_mode == 'local' %}
+            <a href="/admin/local_users" class="btn btn-outline">本地用户管理 →</a>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -1254,13 +1488,20 @@ ADMIN_USER_DETAIL_TEMPLATE = """
         <h3>📱 在线设备（{{ devices|length }} 台）</h3>
         {% if devices %}
         <table>
-            <tr><th>IP地址</th><th>网关</th><th>登录时间</th><th>最近活跃</th></tr>
+            <tr><th>IP地址</th><th>网关</th><th>登录时间</th><th>最近活跃</th><th>操作</th></tr>
             {% for d in devices %}
             <tr>
                 <td>{{ d.get('ip', 'N/A') }}</td>
                 <td>{{ d.get('gw_id', 'N/A') }}</td>
-                <td>{{ (d.get('login_time', 0)|int)|datetimeformat }}</td>
-                <td>{{ (d.get('last_seen', 0)|int)|datetimeformat }}</td>
+                <td class="ts-cell">{{ d.get('login_time', 0) }}</td>
+                <td class="ts-cell">{{ d.get('last_seen', 0) }}</td>
+                <td>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('确定强制踢出该设备？');">
+                        <input type="hidden" name="action" value="kick">
+                        <input type="hidden" name="kick_token" value="{{ d.get('token', '') }}">
+                        <button type="submit" class="btn btn-danger btn-sm">踢出</button>
+                    </form>
+                </td>
             </tr>
             {% endfor %}
         </table>
@@ -1271,14 +1512,258 @@ ADMIN_USER_DETAIL_TEMPLATE = """
 </div>
 
 <script>
-// 简单的时间戳格式化（Jinja2不直接支持，用JS补位）
-document.querySelectorAll('td').forEach(td => {
-    const t = parseInt(td.textContent);
+// 格式化时间戳单元格
+document.querySelectorAll('td.ts-cell').forEach(td => {
+    var val = td.textContent.trim();
+    // 可能是一个浮点数或整数的时间戳
+    var t = parseFloat(val);
     if (!isNaN(t) && t > 1000000000) {
         td.textContent = new Date(t * 1000).toLocaleString('zh-CN');
     }
 });
 </script>
+</body>
+</html>
+"""
+
+# ---------- 本地用户管理列表页 ----------
+ADMIN_LOCAL_USERS_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>本地用户管理 - 管理后台</title>
+    <style>
+        * { margin:0; padding:0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
+        .topbar { background: linear-gradient(135deg, #1a237e 0%, #283593 100%); color: white; padding: 0 30px; height: 56px; display: flex; align-items: center; justify-content: space-between; }
+        .topbar h1 { font-size: 18px; font-weight: 600; }
+        .topbar a { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 13px; }
+        .topbar a:hover { color: white; }
+        .main { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
+        .section { background: white; border-radius: 10px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .section h3 { color: #333; font-size: 16px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee; display: flex; align-items: center; justify-content: space-between; }
+        .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
+        .toolbar input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; width: 240px; }
+        .toolbar input:focus { outline: none; border-color: #1a237e; }
+        .btn { display: inline-block; padding: 8px 18px; border-radius: 6px; font-size: 13px; text-decoration: none; cursor: pointer; border: none; }
+        .btn-primary { background: #1a237e; color: white; }
+        .btn-primary:hover { background: #283593; }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
+        .btn-outline { background: white; color: #1a237e; border: 1px solid #1a237e; }
+        .btn-outline:hover { background: #f0f0ff; }
+        .btn-danger { background: #e53935; color: white; }
+        .btn-danger:hover { background: #c62828; }
+        .btn-success { background: #43a047; color: white; }
+        .btn-success:hover { background: #388e3c; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 10px 12px; font-size: 13px; color: #999; border-bottom: 1px solid #eee; }
+        td { padding: 10px 12px; font-size: 13px; color: #333; border-bottom: 1px solid #f5f5f5; }
+        tr:hover { background: #fafbff; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+        .badge-active { background: #e8f5e9; color: #2e7d32; }
+        .badge-disabled { background: #ffebee; color: #c62828; }
+        .badge-admin { background: #fff3e0; color: #e65100; }
+        .msg { background: #e8f5e9; color: #2e7d32; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; }
+        .msg-error { background: #ffebee; color: #c62828; }
+        .pagination { display: flex; justify-content: center; gap: 8px; margin-top: 20px; }
+        .pagination a, .pagination span { padding: 6px 12px; border-radius: 4px; font-size: 13px; text-decoration: none; }
+        .pagination a { background: #f0f0f0; color: #333; }
+        .pagination a:hover { background: #1a237e; color: white; }
+        .pagination .current { background: #1a237e; color: white; }
+        .empty { text-align: center; padding: 40px; color: #999; }
+    </style>
+</head>
+<body>
+<div class="topbar">
+    <h1><a href="/admin" style="color:white; text-decoration:none;">← 管理后台</a></h1>
+    <div><a href="/admin/logout">退出登录</a></div>
+</div>
+<div class="main">
+    <div class="section">
+        <h3>
+            👥 本地用户管理
+            <a href="/admin/local_users/create" class="btn btn-success btn-sm">+ 创建用户</a>
+        </h3>
+        <div class="toolbar">
+            <form method="GET" style="display:flex;gap:8px;">
+                <input type="text" name="search" placeholder="搜索用户名/显示名/邮箱" value="{{ search }}">
+                <button type="submit" class="btn btn-primary btn-sm">搜索</button>
+                {% if search %}
+                <a href="/admin/local_users" class="btn btn-outline btn-sm">清除</a>
+                {% endif %}
+            </form>
+        </div>
+        {% set msg = request.args.get('msg', '') %}
+        {% if msg %}
+        <div class="msg">{{ msg }}</div>
+        {% endif %}
+        {% if users %}
+        <table>
+            <tr>
+                <th>用户名</th>
+                <th>显示名称</th>
+                <th>邮箱</th>
+                <th>状态</th>
+                <th>角色</th>
+                <th>创建时间</th>
+                <th>操作</th>
+            </tr>
+            {% for u in users %}
+            <tr>
+                <td><strong>{{ u.username }}</strong></td>
+                <td>{{ u.display_name }}</td>
+                <td>{{ u.email or '-' }}</td>
+                <td>
+                    {% if u.enabled %}
+                    <span class="badge badge-active">启用</span>
+                    {% else %}
+                    <span class="badge badge-disabled">禁用</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if u.is_admin %}
+                    <span class="badge badge-admin">管理员</span>
+                    {% else %}
+                    <span style="font-size:11px;color:#999;">普通用户</span>
+                    {% endif %}
+                </td>
+                <td>{{ u.created_at }}</td>
+                <td style="display:flex;gap:6px;flex-wrap:wrap;">
+                    <a href="/admin/local_users/{{ u.username }}/edit" class="btn btn-primary btn-sm">编辑</a>
+                    <form method="POST" action="/admin/local_users/{{ u.username }}/toggle" style="display:inline;">
+                        <button type="submit" class="btn btn-sm {% if u.enabled %}btn-outline{% else %}btn-success{% endif %}">
+                            {% if u.enabled %}禁用{% else %}启用{% endif %}
+                        </button>
+                    </form>
+                    <form method="POST" action="/admin/local_users/{{ u.username }}/delete" style="display:inline;" onsubmit="return confirm('确定删除用户 {{ u.username }}？此操作不可恢复！');">
+                        <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+        <!-- 分页 -->
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}
+            <a href="?page={{ page - 1 }}{% if search %}&search={{ search }}{% endif %}">上一页</a>
+            {% endif %}
+            <span class="current">第 {{ page }} / {{ total_pages }} 页 (共 {{ total }} 用户)</span>
+            {% if page < total_pages %}
+            <a href="?page={{ page + 1 }}{% if search %}&search={{ search }}{% endif %}">下一页</a>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty">
+            {% if search %}
+            未找到匹配 "{{ search }}" 的用户
+            {% else %}
+            暂无本地用户，请 <a href="/admin/local_users/create">创建用户</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+</body>
+</html>
+"""
+
+# ---------- 本地用户创建/编辑表单 ----------
+ADMIN_LOCAL_USER_FORM_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if action == 'create' %}创建用户{% else %}编辑用户{% endif %} - 管理后台</title>
+    <style>
+        * { margin:0; padding:0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
+        .topbar { background: linear-gradient(135deg, #1a237e 0%, #283593 100%); color: white; padding: 0 30px; height: 56px; display: flex; align-items: center; justify-content: space-between; }
+        .topbar h1 { font-size: 18px; font-weight: 600; }
+        .topbar a { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 13px; }
+        .main { max-width: 700px; margin: 30px auto; padding: 0 20px; }
+        .section { background: white; border-radius: 10px; padding: 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .section h3 { color: #333; font-size: 16px; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; color: #666; font-size: 14px; margin-bottom: 6px; font-weight: 500; }
+        .form-group input[type=text],
+        .form-group input[type=password],
+        .form-group input[type=email] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+        .form-group input:focus { outline: none; border-color: #1a237e; box-shadow: 0 0 0 3px rgba(26,35,126,0.1); }
+        .form-group .hint { font-size: 12px; color: #999; margin-top: 4px; }
+        .checkbox-group { display: flex; gap: 20px; align-items: center; }
+        .checkbox-group label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: #333; cursor: pointer; }
+        .checkbox-group input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+        .btn-row { display: flex; gap: 12px; margin-top: 24px; }
+        .btn { display: inline-block; padding: 10px 24px; border-radius: 6px; font-size: 14px; text-decoration: none; cursor: pointer; border: none; }
+        .btn-primary { background: #1a237e; color: white; }
+        .btn-primary:hover { background: #283593; }
+        .btn-outline { background: white; color: #1a237e; border: 1px solid #1a237e; }
+        .btn-outline:hover { background: #f0f0ff; }
+        .btn-danger { background: #e53935; color: white; }
+        .btn-danger:hover { background: #c62828; }
+        .error { background: #ffebee; color: #c62828; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; }
+    </style>
+</head>
+<body>
+<div class="topbar">
+    <h1><a href="/admin/local_users" style="color:white; text-decoration:none;">← 本地用户管理</a></h1>
+    <div><a href="/admin/logout">退出登录</a></div>
+</div>
+<div class="main">
+    <div class="section">
+        <h3>{% if action == 'create' %}创建本地用户{% else %}编辑用户: {{ user.username }}{% endif %}</h3>
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+        {% set msg = request.args.get('msg', '') %}
+        {% if msg %}
+        <div style="background:#e8f5e9;color:#2e7d32;padding:10px 16px;border-radius:6px;margin-bottom:16px;font-size:13px;">{{ msg }}</div>
+        {% endif %}
+        <form method="POST">
+            <div class="form-group">
+                <label>用户名 {% if action == 'edit' %}<span style="color:#999;font-weight:normal;">(不可修改)</span>{% endif %}</label>
+                <input type="text" name="username" value="{{ user.username }}" placeholder="登录用户名" required {% if action == 'edit' %}readonly style="background:#f5f5f5;"{% endif %}>
+            </div>
+            <div class="form-group">
+                <label>密码 {% if action == 'edit' %}<span style="color:#999;font-weight:normal;">(留空不修改)</span>{% endif %}</label>
+                <input type="password" name="password" placeholder="{% if action == 'create' %}设置密码{% else %}输入新密码（留空不修改）{% endif %}" {% if action == 'create' %}required{% endif %} minlength="4">
+                <div class="hint">密码长度至少4位</div>
+            </div>
+            <div class="form-group">
+                <label>显示名称</label>
+                <input type="text" name="display_name" value="{{ user.display_name }}" placeholder="显示名称">
+            </div>
+            <div class="form-group">
+                <label>邮箱</label>
+                <input type="email" name="email" value="{{ user.email or '' }}" placeholder="邮箱地址（可选）">
+            </div>
+            <div class="form-group">
+                <label>状态 & 角色</label>
+                <div class="checkbox-group">
+                    <label><input type="checkbox" name="enabled" value="1" {% if user.enabled %}checked{% endif %}> 启用账号</label>
+                    <label><input type="checkbox" name="is_admin" value="1" {% if user.is_admin %}checked{% endif %}> 管理员</label>
+                </div>
+            </div>
+            <div class="btn-row">
+                <button type="submit" class="btn btn-primary">
+                    {% if action == 'create' %}创建用户{% else %}保存修改{% endif %}
+                </button>
+                <a href="/admin/local_users" class="btn btn-outline">取消</a>
+                {% if action == 'edit' %}
+                <button type="button" class="btn btn-danger" onclick="if(confirm('确定删除用户 {{ user.username }}？此操作不可恢复！')){document.getElementById('delete-form').submit();}">删除用户</button>
+                {% endif %}
+            </div>
+        </form>
+        {% if action == 'edit' %}
+        <form id="delete-form" method="POST" action="/admin/local_users/{{ user.username }}/delete" style="display:none;"></form>
+        {% endif %}
+    </div>
+</div>
 </body>
 </html>
 """
@@ -1299,7 +1784,8 @@ h2{color:#cc0000;}</style></head>
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("  WiFiDog AuthServer 启动 (AD域认证 + 自动清理 + 管理UI)")
+    print("  WiFiDog AuthServer 启动 (双模式认证 + 自动清理 + 管理UI)")
+    print(f"  认证模式   : {'AD域LDAP' if config.AUTH_MODE == 'ad' else '本地用户(SQLite)'}")
     print(f"  监听地址   : http://{config.FLASK_HOST}:{config.FLASK_PORT}")
     print(f"  AD域控     : {config.AD_SERVER}")
     print(f"  Redis      : {config.REDIS_HOST}:{config.REDIS_PORT}")
