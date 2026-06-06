@@ -398,6 +398,11 @@ def build_with_pyinstaller(for_platform):
     proj = get_project_dir()
     dist_dir = proj / 'dist'
 
+    print(f"\n  [debug] Python executable: {sys.executable}")
+    print(f"  [debug] Project dir: {proj}")
+    print(f"  [debug] Platform: {for_platform}")
+    print(f"  [debug] sys.platform: {sys.platform}")
+
     # 确保 api-ms-win-* 等系统 DLL 不被包含（这些是系统文件）
     print("\n  执行 PyInstaller onedir 打包...")
 
@@ -406,6 +411,9 @@ def build_with_pyinstaller(for_platform):
         '--onedir',                    # 单文件夹模式
         '--name', 'wifidog-auth',
         '--clean',
+        '--distpath', str(dist_dir),
+        '--workpath', str(proj / 'build'),
+        '--specpath', str(proj),
     ]
 
     # 排除不必要的系统文件
@@ -447,9 +455,12 @@ def build_with_pyinstaller(for_platform):
 
     cmd.append(str(proj / 'app.py'))
 
+    print(f"  [debug] PyInstaller cmd: {' '.join(str(c) for c in cmd)}")
+
     result = subprocess.run(cmd, cwd=str(proj))
     if result.returncode != 0:
-        print("\n  打包失败!")
+        print(f"\n  [错误] PyInstaller 失败，返回码: {result.returncode}")
+        print(f"  [提示] 请检查上方 PyInstaller 输出信息")
         return False
 
     print("\n  PyInstaller 打包完成")

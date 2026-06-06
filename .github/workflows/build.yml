@@ -69,10 +69,19 @@ jobs:
 
       # ----------------------------------------------------------
       #  执行打包（build.py）
+      #  先打印 Python / pip / pyinstaller 版本，方便调试
       # ----------------------------------------------------------
+      - name: Debug Python environment
+        shell: bash
+        run: |
+          python --version
+          python -c "import sys; print('Python executable:', sys.executable)"
+          python -c "import site; print('site-packages:', site.getsitepackages())"
+          pip list 2>/dev/null | grep -iE "flask|ldap3|redis|apscheduler|dotenv|pyinstaller" || true
+
       - name: Run build.py
         shell: bash
-        run: python build.py --platform ${{ matrix.platform }}
+        run: python build.py --platform ${{ matrix.platform }} 2>&1
 
       # ----------------------------------------------------------
       #  Linux 专用：将 redis-server 二进制文件复制进部署包
