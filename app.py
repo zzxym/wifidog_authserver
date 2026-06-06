@@ -346,6 +346,7 @@ def get_auth_description():
 # ==================== WiFiDog 协议接口 ====================
 
 @app.route('/login', methods=['GET', 'POST'])
+@app.route('/login/', methods=['GET', 'POST'])
 def login():
     """WiFiDog网关重定向到此进行登录认证"""
     gw_address = request.args.get('gw_address', '')
@@ -418,6 +419,7 @@ def login():
 
 
 @app.route('/auth', methods=['GET'])
+@app.route('/auth/', methods=['GET'])
 def auth():
     """WiFiDog网关心跳调用此接口验证用户在线状态"""
     stage = request.args.get('stage', '')
@@ -451,6 +453,7 @@ def auth():
 
 
 @app.route('/ping', methods=['GET'])
+@app.route('/ping/', methods=['GET'])
 def ping():
     """WiFiDog网关心跳检测"""
     gw_id = request.args.get('gw_id', '')
@@ -460,6 +463,7 @@ def ping():
 
 
 @app.route('/portal', methods=['GET'])
+@app.route('/portal/', methods=['GET'])
 def portal():
     """认证成功后，网关重定向用户到此页面"""
     gw_id = request.args.get('gw_id', '')
@@ -468,6 +472,7 @@ def portal():
 
 
 @app.route('/gw_message', methods=['GET'])
+@app.route('/gw_message/', methods=['GET'])
 def gw_message():
     """认证失败等消息页面"""
     message = request.args.get('message', 'unknown')
