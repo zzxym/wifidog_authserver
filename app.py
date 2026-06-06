@@ -1030,7 +1030,7 @@ MANAGE_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>我的设备管理</title>
+    <title>晓林无线认证-自助管理</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; padding: 40px; }
@@ -1193,7 +1193,7 @@ ADMIN_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理后台 - WiFiDog AuthServer</title>
+    <title>晓林无线认证-管理后台</title>
     <style>
         * { margin:0; padding:0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
