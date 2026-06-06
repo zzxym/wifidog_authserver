@@ -156,7 +156,7 @@ jobs:
     name: Publish Release
     needs: build
     runs-on: ubuntu-latest
-    # 发布需要写权限
+    # 发布需要 contents write 权限
     permissions:
       contents: write
 
@@ -165,7 +165,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true      # 合并到同一目录
+          merge-multiple: true
 
       - name: List downloaded artifacts
         run: |
@@ -181,79 +181,43 @@ jobs:
           cat SHA256SUMS.txt
           echo "=========================="
 
-      - name: Publish Release (continuous / tag)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          # 判断触发类型：标签推送 vs 分支推送
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # ====================================================
-            #  标签推送：创建正式版本 Release
-            # ====================================================
-            TAG_NAME="${{ github.ref_name }}"
-            echo "=== Creating versioned release: $TAG_NAME ==="
-
-            # 使用 softprops/action-gh-release 风格：直接用 gh 创建
-            # --generate-notes：自动从 commit 生成 Release Notes
-            # --latest：设为仓库最新版本
-            gh release create "$TAG_NAME" \
-              artifacts/*.zip \
-              artifacts/SHA256SUMS.txt \
-              --title "$TAG_NAME" \
-              --generate-notes \
-              --latest
-
-            echo "Release created: https://github.com/${{ github.repository }}/releases/tag/$TAG_NAME"
-
-          else
-            # ====================================================
-            #  分支推送（master/main）：更新 continuous 预发布
-            #  每次推送都删除旧 continuous 并重建
-            # ====================================================
-            echo "=== Creating/updating continuous pre-release ==="
-
-            # 删除旧的 continuous release（如果存在）
-            gh release delete continuous \
-              --yes \
-              --cleanup-tag \
-              2>/dev/null || echo "No existing continuous release to delete"
-
-            # 等待 GitHub API 同步
-            sleep 3
-
-            # 创建新的 continuous release
-            SHORT_SHA="${GITHUB_SHA:0:7}"
-            gh release create continuous \
-              artifacts/*.zip \
-              artifacts/SHA256SUMS.txt \
-              --prerelease \
-              --title "Continuous Build (${SHORT_SHA})" \
-              --notes "Automatically built from commit \`${GITHUB_SHA}\` on branch \`${{ github.ref_name }}\`.
-
-          **This is a pre-release** — it is re-created on every push to \`${{ github.ref_name }}\`.
-
-          ## 下载
-          - **Windows x64**: \`wifidog-authserver-windows.zip\`
-          - **Linux x64**:   \`wifidog-authserver-linux.zip\`
-
-          ## 安装说明
-          See [README](https://github.com/${{ github.repository }}) for deployment instructions."
-
-            echo "Continuous release updated: https://github.com/${{ github.repository }}/releases/tag/continuous"
-          fi
+      # ----------------------------------------------------------
+      #  版本化 Release（仅 tag 推送时触发）
+      # ----------------------------------------------------------
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
+          generate_release_notes: true
+          make_latest: true
 
       # ----------------------------------------------------------
-      #  发布失败时的提示
+      #  Continuous 预发布（分支推送时触发）
+      #  每次推送都更新 continuous release
       # ----------------------------------------------------------
-      - name: Release failed notification
-        if: failure()
-        run: |
-          echo "==============================================="
-          echo "  Release 发布失败！"
-          echo "  请检查："
-          echo "  1. artifacts/ 目录中是否有 .zip 文件"
-          echo "  2. GITHUB_TOKEN 权限是否正确"
-          echo "  3. 查看上方日志获取详细错误信息"
-          echo "==============================================="
-          exit 1
+      - name: Publish continuous pre-release
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: "Continuous Build (${{ github.sha }})"
+          body: |
+            Automatically built from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
+
+            **This is a pre-release** — it is re-created on every push to `${{ github.ref_name }}`.
+
+            ## Downloads
+            - **Windows x64**: `wifidog-authserver-windows.zip`
+            - **Linux x64**:   `wifidog-authserver-linux.zip`
+
+            ## Setup
+            See [README](https://github.com/${{ github.repository }}) for deployment instructions.
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
+          prerelease: true
