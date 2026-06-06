@@ -28,6 +28,17 @@ WiFiDog AuthServer 打包部署工具
   python build.py                        # 自动检测系统，打包绿色部署文件夹
   python build.py --platform windows     # 仅生成 Windows 包
   python build.py --platform linux       # 仅生成 Linux 包
+"""
+
+import sys
+
+# ---- 强制 UTF-8 输出（Windows CI / cp1252 环境兜底） ----
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+# ----------------------------------------------------------
   python build.py --skip-redis           # 跳过 Redis 下载（手动提供）
   python build.py --clean               # 清理构建文件
 """

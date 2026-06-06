@@ -17,6 +17,7 @@ permissions:
 # 全局环境变量
 env:
   PYTHON_VERSION: '3.11'
+  PYTHONIOENCODING: 'utf-8'          # Windows CI 默认 cp1252，中文会崩溃
 
 jobs:
   # ============================================================
