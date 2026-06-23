@@ -16,7 +16,9 @@
   │   ├── redis-cli.exe
   │   ├── redis.conf
   │   └── redis_data/        ← Redis 持久化数据（自动创建）
-  ├── start.bat / start.sh   ← 启动脚本
+  ├── log/                   ← 应用日志（启动后自动创建）
+  ├── start.bat / start.sh   ← 启动脚本（支持后台/停止模式）
+  ├── stop.bat / stop.sh     ← 停止脚本（完全停止所有服务）
   └── README.txt             ← 部署说明
 """
 

@@ -11,13 +11,17 @@ WiFiDog AuthServer 打包部署工具
   │   ├── redis-server.exe
   │   ├── redis.conf
   │   └── redis_data/          ← Redis 持久化数据
-  ├── start.bat                ← Windows 启动脚本
+  ├── log/                     ← 应用日志（启动后自动创建）
+  ├── start.bat                ← 启动脚本（后台最小化运行）
+  ├── stop.bat                 ← 停止脚本（完全停止所有服务）
   └── README.txt               ← 部署说明
 
   wifidog-authserver-linux/
   ├── wifidog-auth             ← PyInstaller onedir 主程序
   ├── .env.template
-  ├── start.sh                 ← Linux 启动脚本（Docker 启动 Redis）
+  ├── log/                     ← 应用日志（启动后自动创建）
+  ├── start.sh                 ← 启动脚本（支持 -d 后台 + stop 停止）
+  ├── stop.sh                  ← 停止脚本（完全停止所有服务）
   └── README.txt
 
 使用方法:
@@ -271,12 +275,18 @@ README_WINDOWS = """=======================================================
      - 如果 redis/ 目录下有 redis-server.exe，程序会自动启动
      - 也可自行安装 Redis 服务
 
-  4. 双击 start.bat 启动服务
+  4. 双击 start.bat 启动服务（后台运行）
+     - 启动成功后窗口自动关闭，服务继续在后台运行
+     - 如启动超时，请检查 redis/ 目录下的 redis-server.exe
 
-  5. 在锐捷 AC 上配置 WiFiDog 认证服务器:
+  5. 双击 stop.bat 完全停止服务
+     - 同时停止 AuthServer 和 Redis 进程
+     - 删除目录前请先运行 stop.bat
+
+  6. 在锐捷 AC 上配置 WiFiDog 认证服务器:
      URL: http://服务器IP:5000/login
 
-  6. 管理界面:
+  7. 管理界面:
      浏览器打开: http://服务器IP:5000/admin
      使用 .env 中设置的 ADMIN_TOKEN 登录
 
@@ -286,7 +296,9 @@ README_WINDOWS = """=======================================================
   ├── .env.template         ← 配置模板
   ├── redis/                ← Redis 绿色版（Windows x64）
   │   └── redis_data/       ← Redis 持久化数据
-  └── start.bat             ← 启动脚本
+  ├── log/                  ← 应用日志（启动后自动创建）
+  ├── start.bat             ← 启动脚本（后台运行）
+  └── stop.bat              ← 停止脚本（完全停止）
 
 ⚠️  依赖：
   - Windows 10/11 或 Windows Server 2016+
@@ -298,6 +310,9 @@ README_WINDOWS = """=======================================================
   Q: 启动后显示"Redis 未就绪"
   A: 检查 redis/ 目录是否有 redis-server.exe，或防火墙是否阻止
 
+  Q: 如何停止服务 / 删除目录提示占用？
+  A: 双击 stop.bat 完全停止服务后再删除
+
   Q: 如何以 Windows 服务方式运行？
   A: 使用 NSSM (http://nssm.cc) 注册为服务:
      nssm install WiFiDogAuth
@@ -305,8 +320,8 @@ README_WINDOWS = """=======================================================
      启动目录: 本文件夹路径
 
   Q: 如何查看日志？
-  A: 程序日志输出到控制台窗口（请勿关闭）
-     Redis 日志在 redis/redis_data/redis.log
+  A: 应用日志: log/authserver-YYYY-MM-DD.log
+     Redis 日志: redis/redis_data/redis.log
 """
 
 
@@ -327,26 +342,40 @@ README_LINUX = """=======================================================
      cp .env.template .env
      vim .env  # 填入 AD 域信息和管理令牌
 
-  4. 运行启动脚本:
-     chmod +x wifidog-auth start.sh
+  4. 赋予执行权限:
+     chmod +x wifidog-auth start.sh stop.sh
+
+  5. 运行启动脚本:
+     # 前台运行（systemd 推荐）
      ./start.sh
+     # 后台运行
+     ./start.sh -d
      # 脚本会自动用 Docker 启动 Redis（redis:7-alpine）
 
-  5. 配置锐捷 AC:
+  6. 停止服务:
+     ./stop.sh    （或 ./start.sh stop）
+
+  7. 配置锐捷 AC:
      WiFiDog 认证服务器 URL: http://服务器IP:5000/login
 
-  6. 管理界面:
+  8. 管理界面:
      http://服务器IP:5000/admin
 
 📁 目录结构：
   wifidog-authserver-linux/
   ├── wifidog-auth           ← 主程序
   ├── .env.template
-  └── start.sh               ← 启动脚本（自动 Docker 启动 Redis）
+  ├── log/                   ← 应用日志（启动后自动创建）
+  ├── start.sh               ← 启动脚本（支持 -d 后台 + stop 停止）
+  └── stop.sh                ← 停止脚本（完全停止所有服务）
 
 🆘 常见问题：
   Q: 需要什么依赖？
   A: 仅需 Docker，Python 已全部打包在内
+
+  Q: 如何查看日志？
+  A: 应用日志: log/authserver.log
+     Redis 日志: docker logs wifidog-redis
 
   Q: 如何以 systemd 服务运行？
   A: 创建 /etc/systemd/system/wifidog-auth.service:
@@ -358,10 +387,12 @@ README_LINUX = """=======================================================
      Type=simple
      WorkingDirectory=/opt/wifidog-authserver
      ExecStart=/opt/wifidog-authserver/start.sh
+     ExecStop=/opt/wifidog-authserver/stop.sh
      Restart=always
      [Install]
      WantedBy=multi-user.target
 
+     sudo systemctl daemon-reload
      sudo systemctl enable wifidog-auth
      sudo systemctl start wifidog-auth
 
@@ -536,63 +567,192 @@ def assemble_package(for_platform):
 
     # 5. 创建启动脚本
     if for_platform == 'windows':
-        # start.bat
+        # start.bat（后台启动 + 验证）
         start_bat = package_dir / 'start.bat'
         start_bat.write_text("""@echo off
 chcp 65001 >nul
-title WiFiDog AuthServer
+title WiFiDog AuthServer - 正在启动...
+cd /d "%~dp0"
+
 echo =============================================
 echo   晓林无线认证 - WiFiDog AuthServer
 echo =============================================
 echo.
-cd /d "%~dp0"
 
 REM 检查 .env
 if not exist ".env" (
     echo [警告] 未找到 .env 配置文件
     echo.
-    echo 正在从 .env.template 创建...
-    copy ".env.template" ".env" >nul
-    echo 请编辑 .env 文件，填写 AD 域信息和管理令牌后重新启动
+    if exist ".env.template" (
+        echo 正在从 .env.template 创建...
+        copy ".env.template" ".env" >nul
+        echo 请编辑 .env 文件，填写 AD 域信息和管理令牌后重新启动
+    ) else (
+        echo 未找到 .env.template，请重新下载完整包
+    )
     echo.
     pause
     exit /b 0
 )
 
-echo [启动] WiFiDog AuthServer...
-echo [提示] 请勿关闭此窗口
+echo [启动] 正在后台启动 AuthServer...
 echo.
-wifidog-auth.exe
+start "" /MIN wifidog-auth.exe
+
+REM 等待启动（每 1 秒检查一次，最多 30 次）
+echo 等待服务就绪...（最多 30 秒）
+setlocal enabledelayedexpansion
+for /L %%i in (1,1,30) do (
+    timeout /t 1 /nobreak >nul
+    curl -s --connect-timeout 2 http://127.0.0.1:5000/login >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo.
+        echo =============================================
+        echo   ✅ AuthServer 已成功启动！
+        echo   管理后台: http://127.0.0.1:5000/admin
+        echo   停止服务: 双击 stop.bat
+        echo =============================================
+        echo.
+        timeout /t 3 >nul
+        exit /b 0
+    )
+)
+endlocal
+
+echo.
+echo ⚠️  启动超时，请检查 Redis 是否就绪
+echo    数据目录: redis\\redis_data\\
+echo    停止服务: 双击 stop.bat
+echo.
 pause
+exit /b 1
 """, encoding='utf-8')
-        print(f"  ✅ start.bat 已创建")
+        print(f"  ✅ start.bat 已创建（后台启动模式）")
+
+        # stop.bat（完全停止所有服务）
+        stop_bat = package_dir / 'stop.bat'
+        stop_bat.write_text("""@echo off
+chcp 65001 >nul
+title WiFiDog AuthServer - 停止服务
+cd /d "%~dp0"
+
+echo =============================================
+echo   晓林无线认证 - 停止服务
+echo =============================================
+echo.
+
+echo [1/2] 停止 AuthServer...
+taskkill /F /IM wifidog-auth.exe >nul 2>&1
+if %errorlevel%==0 (
+    echo   ✅ wifidog-auth.exe 已停止
+) else (
+    echo   ℹ️  wifidog-auth.exe 未在运行
+)
+
+echo.
+echo [2/2] 停止 Redis...
+taskkill /F /IM redis-server.exe >nul 2>&1
+if %errorlevel%==0 (
+    echo   ✅ redis-server.exe 已停止
+) else (
+    echo   ℹ️  redis-server.exe 未在运行
+)
+
+echo.
+echo =============================================
+echo   ✅ 所有服务已完全停止
+echo =============================================
+echo.
+timeout /t 3 >nul
+exit /b 0
+""", encoding='utf-8')
+        print(f"  ✅ stop.bat 已创建")
     else:
         # start.sh（Linux：Docker 启动 Redis + 启动应用）
         start_sh = package_dir / 'start.sh'
         start_sh.write_text("""#!/bin/bash
 set -e
 
-echo "=========================================="
-echo "  WiFiDog AuthServer 启动器"
-echo "=========================================="
-echo ""
-
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
+
+PID_FILE="$SCRIPT_DIR/authserver.pid"
+LOG_DIR="$SCRIPT_DIR/log"
+
+# ── 解析参数 ──
+RUN_MODE="foreground"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--daemon) RUN_MODE="daemon" ;;
+        stop)
+            # ── 停止模式 ──
+            echo "=========================================="
+            echo "  停止 WiFiDog AuthServer"
+            echo "=========================================="
+            echo ""
+            echo "[1/2] 停止 AuthServer..."
+            if [ -f "$PID_FILE" ]; then
+                PID=$(cat "$PID_FILE")
+                if kill -0 "$PID" 2>/dev/null; then
+                    kill "$PID"
+                    sleep 2
+                    if kill -0 "$PID" 2>/dev/null; then
+                        echo "  强制终止..."
+                        kill -9 "$PID" 2>/dev/null
+                    fi
+                    echo "   ✅ AuthServer 已停止 (PID: $PID)"
+                else
+                    echo "   ℹ️  PID $PID 不在运行"
+                fi
+                rm -f "$PID_FILE"
+            else
+                # 无 PID 文件，按进程名终止
+                pkill -f "wifidog-auth" 2>/dev/null && echo "   ✅ 已终止 wifidog-auth" || echo "   ℹ️  未找到 wifidog-auth 进程"
+            fi
+            echo ""
+            echo "[2/2] 停止 Redis (Docker)..."
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^wifidog-redis$'; then
+                docker stop wifidog-redis
+                echo "   ✅ wifidog-redis 已停止"
+            else
+                echo "   ℹ️  wifidog-redis 未在运行"
+            fi
+            echo ""
+            echo "=========================================="
+            echo "  ✅ 所有服务已停止"
+            echo "=========================================="
+            exit 0
+            ;;
+        *) echo "用法: $0 [-d|--daemon] [stop]"; exit 1 ;;
+    esac
+    shift
+done
+
+# ── 启动流程 ──
+if [ "$RUN_MODE" = "daemon" ]; then
+    echo "=========================================="
+    echo "  WiFiDog AuthServer 启动器（后台模式）"
+    echo "=========================================="
+else
+    echo "=========================================="
+    echo "  WiFiDog AuthServer 启动器"
+    echo "=========================================="
+fi
+echo ""
 
 # ── 检查 Redis ──
 echo "[1/3] 检查 Redis 连接..."
 REDIS_STARTED=false
 
 if redis-cli ping > /dev/null 2>&1; then
-    echo "✅ Redis 已运行"
+    echo "   ✅ Redis 已运行"
     REDIS_STARTED=true
 fi
 
 if [ "$REDIS_STARTED" = false ]; then
-    echo "🐳 使用 Docker 启动 Redis..."
+    echo "   🐳 使用 Docker 启动 Redis..."
     if ! command -v docker &> /dev/null; then
-        echo "❌ 未安装 Docker，请先安装: curl -fsSL https://get.docker.com | sh"
+        echo "   ❌ 未安装 Docker，请先安装: curl -fsSL https://get.docker.com | sh"
         exit 1
     fi
     if docker ps -a --format '{{.Names}}' | grep -q '^wifidog-redis$'; then
@@ -607,9 +767,9 @@ if [ "$REDIS_STARTED" = false ]; then
     fi
     sleep 2
     if redis-cli ping > /dev/null 2>&1; then
-        echo "✅ Redis Docker 版已启动"
+        echo "   ✅ Redis Docker 版已启动"
     else
-        echo "❌ Docker Redis 启动失败，请检查 Docker 状态"
+        echo "   ❌ Docker Redis 启动失败，请检查 Docker 状态"
         exit 1
     fi
 fi
@@ -618,24 +778,101 @@ fi
 echo ""
 echo "[2/3] 检查配置文件..."
 if [ ! -f ".env" ]; then
-    echo "⚠️  未找到 .env 配置文件"
-    echo "   正在从 .env.template 创建..."
+    echo "   ⚠️  未找到 .env 配置文件"
+    echo "      正在从 .env.template 创建..."
     cp .env.template .env
-    echo "   ✅ 已创建 .env，请编辑后重新运行此脚本"
-    echo "   重点修改: AD_SERVER, AD_BIND_DN, AD_BIND_PASSWORD, ADMIN_TOKEN"
+    echo "      ✅ 已创建 .env，请编辑后重新运行此脚本"
+    echo "      重点修改: AD_SERVER, AD_BIND_DN, AD_BIND_PASSWORD, ADMIN_TOKEN"
     exit 0
 else
-    echo "✅ 配置文件存在"
+    echo "   ✅ 配置文件存在"
 fi
 
-# ── 启动 AuthServer ──
+# 确保日志目录存在
+mkdir -p "$LOG_DIR"
+
 echo ""
 echo "[3/3] 启动 AuthServer..."
+echo "   日志目录: $LOG_DIR/"
 echo ""
-./wifidog-auth
+
+if [ "$RUN_MODE" = "daemon" ]; then
+    echo "   后台启动中..."
+    nohup ./wifidog-auth > "$LOG_DIR/authserver.log" 2>&1 &
+    PID=$!
+    echo $PID > "$PID_FILE"
+    sleep 2
+    if kill -0 "$PID" 2>/dev/null; then
+        echo ""
+        echo "=========================================="
+        echo "  ✅ AuthServer 已后台启动"
+        echo "  PID: $PID  (记录在 $PID_FILE)"
+        echo "  管理后台: http://127.0.0.1:5000/admin"
+        echo "  停止服务: $0 stop"
+        echo "  查看日志: tail -f $LOG_DIR/authserver.log"
+        echo "=========================================="
+    else
+        rm -f "$PID_FILE"
+        echo "  ❌ 启动失败，请查看日志: $LOG_DIR/authserver.log"
+        exit 1
+    fi
+else
+    echo "   前台运行中（Ctrl+C 停止）..."
+    ./wifidog-auth
+fi
 """)
         start_sh.chmod(start_sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        print(f"  ✅ start.sh 已创建（含 Docker Redis 自动启动）")
+        print(f"  ✅ start.sh 已创建（含后台/停止模式）")
+
+        # stop.sh（Linux：完全停止所有服务）
+        stop_sh = package_dir / 'stop.sh'
+        stop_sh.write_text("""#!/bin/bash
+set -e
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+PID_FILE="$SCRIPT_DIR/authserver.pid"
+
+echo "=========================================="
+echo "  WiFiDog AuthServer - 停止服务"
+echo "=========================================="
+echo ""
+
+echo "[1/2] 停止 AuthServer..."
+if [ -f "$PID_FILE" ]; then
+    PID=$(cat "$PID_FILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        kill "$PID"
+        sleep 2
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "  强制终止..."
+            kill -9 "$PID" 2>/dev/null
+        fi
+        echo "   ✅ AuthServer 已停止 (PID: $PID)"
+    else
+        echo "   ℹ️  PID $PID 不在运行"
+    fi
+    rm -f "$PID_FILE"
+else
+    pkill -f "wifidog-auth" 2>/dev/null && echo "   ✅ 已终止 wifidog-auth" || echo "   ℹ️  未找到 wifidog-auth 进程"
+fi
+
+echo ""
+echo "[2/2] 停止 Redis (Docker)..."
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^wifidog-redis$'; then
+    docker stop wifidog-redis
+    echo "   ✅ wifidog-redis 已停止"
+else
+    echo "   ℹ️  wifidog-redis 未在运行"
+fi
+
+echo ""
+echo "=========================================="
+echo "  ✅ 所有服务已完全停止"
+echo "=========================================="
+""")
+        stop_sh.chmod(stop_sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        print(f"  ✅ stop.sh 已创建")
 
     # 6. 创建 README.txt
     if for_platform == 'windows':

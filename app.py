@@ -34,7 +34,7 @@ from local_auth import local_auth
 
 # ==================== 日志系统初始化 ====================
 
-_log_dir = Path(__file__).parent / 'log'
+_log_dir = BINARY_DIR / 'log'
 _log_dir.mkdir(exist_ok=True)
 _log_file_path = _log_dir / f'authserver-{datetime.now().strftime("%Y-%m-%d")}.log'
 
