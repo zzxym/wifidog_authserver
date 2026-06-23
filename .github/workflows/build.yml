@@ -60,15 +60,6 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       # ----------------------------------------------------------
-      #  Linux 专用：安装 Redis（用于打包进绿色部署包）
-      # ----------------------------------------------------------
-      - name: Install Redis (Linux)
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq redis-server
-
-      # ----------------------------------------------------------
       #  执行打包（build.py）
       #  先打印 Python / pip / pyinstaller 版本，方便调试
       # ----------------------------------------------------------
@@ -106,24 +97,6 @@ jobs:
           echo "=== Last 40 lines of output: ==="
           tail -40 build_output.log || cat build_output.log
           echo "=== End of output ==="
-
-      # ----------------------------------------------------------
-      #  Linux 专用：将 redis-server 二进制文件复制进部署包
-      #  (build.py 只生成配置文件，不打包二进制)
-      # ----------------------------------------------------------
-      - name: Bundle Redis binary (Linux)
-        if: matrix.platform == 'linux'
-        shell: bash
-        run: |
-          REDIS_SERVER_BIN=$(which redis-server)
-          REDIS_CLI_BIN=$(which redis-cli)
-          echo "Redis server: $REDIS_SERVER_BIN"
-          echo "Redis CLI:    $REDIS_CLI_BIN"
-          cp "$REDIS_SERVER_BIN" "dist/${{ matrix.artifact_name }}/redis/redis-server"
-          cp "$REDIS_CLI_BIN" "dist/${{ matrix.artifact_name }}/redis/redis-cli"
-          chmod +x "dist/${{ matrix.artifact_name }}/redis/redis-server"
-          chmod +x "dist/${{ matrix.artifact_name }}/redis/redis-cli"
-          echo "Bundled redis-server: $(file dist/${{ matrix.artifact_name }}/redis/redis-server)"
 
       # ----------------------------------------------------------
       #  将部署包文件夹压缩为 ZIP

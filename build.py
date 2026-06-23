@@ -17,11 +17,7 @@ WiFiDog AuthServer 打包部署工具
   wifidog-authserver-linux/
   ├── wifidog-auth             ← PyInstaller onedir 主程序
   ├── .env.template
-  ├── redis/
-  │   ├── redis-server         ← Linux 绿色版 Redis
-  │   ├── redis.conf
-  │   └── redis_data/          ← Redis 持久化数据
-  ├── start.sh                 ← Linux 启动脚本
+  ├── start.sh                 ← Linux 启动脚本（Docker 启动 Redis）
   └── README.txt
 
 使用方法:
@@ -188,51 +184,6 @@ dbfilename dump.rdb
         return False
 
 
-def bundle_redis_linux(dest_dir):
-    """
-    为 Linux 准备 Redis 说明和配置文件
-    Linux 用户通常用系统包管理器安装，这里创建配置和说明
-    """
-    redis_dir = Path(dest_dir) / 'redis'
-    redis_dir.mkdir(parents=True, exist_ok=True)
-
-    # 创建 redis.conf
-    redis_conf = redis_dir / 'redis.conf'
-    conf_content = f"""# Redis 配置 - WiFiDog AuthServer 绿色部署
-bind 127.0.0.1
-port {os.getenv('REDIS_PORT', '6379')}
-dir ./redis/redis_data
-logfile redis.log
-save 900 1
-save 300 10
-save 60 10000
-dbfilename dump.rdb
-"""
-    redis_conf.write_text(conf_content, encoding='utf-8')
-
-    # 创建安装说明
-    install_txt = redis_dir / '安装说明.txt'
-    install_txt.write_text(
-        "# Linux Redis 绿色部署\n\n"
-        "## 方案一：使用系统包管理器\n"
-        "  Ubuntu/Debian: sudo apt install redis-server\n"
-        "  CentOS/RHEL:   sudo yum install redis\n"
-        "  安装后，AuthServer 会自动检测并连接\n\n"
-        "## 方案二：绿色部署（复制到本目录）\n"
-        "  1. 从已有系统复制: cp $(which redis-server) ./\n"
-        "  2. 或从官网下载编译好的二进制文件\n"
-        "  3. AuthServer 会自动启动本目录的 redis-server\n\n"
-        "# 如果使用 Docker Redis:\n"
-        "  docker run -d --name auth-redis -p 6379:6379 redis:alpine\n\n"
-        "# 如果 Redis 在其他服务器:\n"
-        "  修改 .env 中的 REDIS_HOST 和 REDIS_PORT\n"
-        "  设置 REDIS_AUTO_START=False\n",
-        encoding='utf-8'
-    )
-
-    print("  Linux Redis 配置已创建（使用系统 Redis 或手动放置二进制）")
-
-
 # ═══════════════════════════════════════════
 #  配置模板
 # ═══════════════════════════════════════════
@@ -369,19 +320,17 @@ README_LINUX = """=======================================================
      tar xzf wifidog-authserver-linux.tar.gz
      cd wifidog-authserver-linux
 
-  2. 配置 .env 文件:
+  2. 安装 Docker（如未安装）:
+     curl -fsSL https://get.docker.com | sh
+
+  3. 配置 .env 文件:
      cp .env.template .env
      vim .env  # 填入 AD 域信息和管理令牌
-
-  3. 确保 Redis 已就绪:
-     # 方案A: 系统安装
-     sudo apt install redis-server  # Ubuntu/Debian
-     # 方案B: 使用内置绿色版
-     # 查看 redis/安装说明.txt
 
   4. 运行启动脚本:
      chmod +x wifidog-auth start.sh
      ./start.sh
+     # 脚本会自动用 Docker 启动 Redis（redis:7-alpine）
 
   5. 配置锐捷 AC:
      WiFiDog 认证服务器 URL: http://服务器IP:5000/login
@@ -393,29 +342,32 @@ README_LINUX = """=======================================================
   wifidog-authserver-linux/
   ├── wifidog-auth           ← 主程序
   ├── .env.template
-  ├── redis/                 ← Redis 配置
-  │   └── redis_data/        ← Redis 持久化数据
-  └── start.sh               ← 启动脚本
+  └── start.sh               ← 启动脚本（自动 Docker 启动 Redis）
 
 🆘 常见问题：
   Q: 需要什么依赖？
-  A: 无需安装 Python，已全部打包在内
+  A: 仅需 Docker，Python 已全部打包在内
 
   Q: 如何以 systemd 服务运行？
   A: 创建 /etc/systemd/system/wifidog-auth.service:
      [Unit]
      Description=WiFiDog AuthServer
-     After=network.target
+     After=network.target docker.service
+     Requires=docker.service
      [Service]
      Type=simple
      WorkingDirectory=/opt/wifidog-authserver
-     ExecStart=/opt/wifidog-authserver/wifidog-auth
+     ExecStart=/opt/wifidog-authserver/start.sh
      Restart=always
      [Install]
      WantedBy=multi-user.target
 
      sudo systemctl enable wifidog-auth
      sudo systemctl start wifidog-auth
+
+  Q: Redis 数据存在哪里？
+  A: Docker named volume wifidog_redis_data
+     查看: docker volume inspect wifidog_redis_data
 """
 
 
@@ -572,16 +524,15 @@ def assemble_package(for_platform):
     env_tpl.write_text(ENV_TEMPLATE, encoding='utf-8')
     print(f"  ✅ .env.template 已创建")
 
-    # 3. 创建 redis/redis_data 目录
-    redis_data = package_dir / 'redis' / 'redis_data'
-    redis_data.mkdir(parents=True, exist_ok=True)
-    print(f"  ✅ redis/redis_data/ 已创建")
+    # 3. 创建 redis/redis_data 目录（仅 Windows）
+    if for_platform == 'windows':
+        redis_data = package_dir / 'redis' / 'redis_data'
+        redis_data.mkdir(parents=True, exist_ok=True)
+        print(f"  ✅ redis/redis_data/ 已创建")
 
-    # 4a. 处理 Redis (Windows: 下载绿色版)
+    # 4. 处理 Redis
     if for_platform == 'windows':
         download_redis_windows(package_dir)
-    else:
-        bundle_redis_linux(package_dir)
 
     # 5. 创建启动脚本
     if for_platform == 'windows':
@@ -616,35 +567,75 @@ pause
 """, encoding='utf-8')
         print(f"  ✅ start.bat 已创建")
     else:
-        # start.sh
+        # start.sh（Linux：Docker 启动 Redis + 启动应用）
         start_sh = package_dir / 'start.sh'
         start_sh.write_text("""#!/bin/bash
-echo "============================================"
-echo "  晓林无线认证 - WiFiDog AuthServer"
-echo "============================================"
+set -e
+
+echo "=========================================="
+echo "  WiFiDog AuthServer 启动器"
+echo "=========================================="
 echo ""
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-# 检查 .env
-if [ ! -f ".env" ]; then
-    echo "[警告] 未找到 .env 配置文件"
-    echo ""
-    echo "正在从 .env.template 创建..."
-    cp .env.template .env
-    echo "请编辑 .env 文件，填写 AD 域信息和管理令牌后重新启动"
-    exit 0
+# ── 检查 Redis ──
+echo "[1/3] 检查 Redis 连接..."
+REDIS_STARTED=false
+
+if redis-cli ping > /dev/null 2>&1; then
+    echo "✅ Redis 已运行"
+    REDIS_STARTED=true
 fi
 
-echo "[启动] WiFiDog AuthServer..."
-echo "[提示] 按 Ctrl+C 停止服务"
-echo ""
+if [ "$REDIS_STARTED" = false ]; then
+    echo "🐳 使用 Docker 启动 Redis..."
+    if ! command -v docker &> /dev/null; then
+        echo "❌ 未安装 Docker，请先安装: curl -fsSL https://get.docker.com | sh"
+        exit 1
+    fi
+    if docker ps -a --format '{{.Names}}' | grep -q '^wifidog-redis$'; then
+        docker start wifidog-redis 2>/dev/null
+    else
+        docker run -d \
+            --name wifidog-redis \
+            --restart unless-stopped \
+            -p 127.0.0.1:6379:6379 \
+            -v wifidog_redis_data:/data \
+            redis:7-alpine redis-server --appendonly yes
+    fi
+    sleep 2
+    if redis-cli ping > /dev/null 2>&1; then
+        echo "✅ Redis Docker 版已启动"
+    else
+        echo "❌ Docker Redis 启动失败，请检查 Docker 状态"
+        exit 1
+    fi
+fi
 
+# ── 检查配置文件 ──
+echo ""
+echo "[2/3] 检查配置文件..."
+if [ ! -f ".env" ]; then
+    echo "⚠️  未找到 .env 配置文件"
+    echo "   正在从 .env.template 创建..."
+    cp .env.template .env
+    echo "   ✅ 已创建 .env，请编辑后重新运行此脚本"
+    echo "   重点修改: AD_SERVER, AD_BIND_DN, AD_BIND_PASSWORD, ADMIN_TOKEN"
+    exit 0
+else
+    echo "✅ 配置文件存在"
+fi
+
+# ── 启动 AuthServer ──
+echo ""
+echo "[3/3] 启动 AuthServer..."
+echo ""
 ./wifidog-auth
 """)
         start_sh.chmod(start_sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        print(f"  ✅ start.sh 已创建")
+        print(f"  ✅ start.sh 已创建（含 Docker Redis 自动启动）")
 
     # 6. 创建 README.txt
     if for_platform == 'windows':
