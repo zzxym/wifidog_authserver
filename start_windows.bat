@@ -25,15 +25,15 @@ echo.
 echo [2/3] 检查配置文件...
 if not exist ".env" (
     echo ⚠️  未找到 .env 配置文件
-    echo    正在从 .env.template 创建...
-    if exist ".env.template" (
-        copy ".env.template" ".env" > nul
+    echo    正在从 ..env.example 创建...
+    if exist "..env.example" (
+        copy "..env.example" ".env" > nul
         echo    ✅ 已创建 .env，请编辑后重新运行此脚本
         echo    重点修改: AD_SERVER, AD_BIND_DN, AD_BIND_PASSWORD, ADMIN_TOKEN
         pause
         exit /b 0
     ) else (
-        echo ❌ 未找到 .env.template，请重新下载完整包
+        echo ❌ 未找到 ..env.example，请重新下载完整包
         pause
         exit /b 1
     )

@@ -43,7 +43,7 @@ class DeviceManager:
 
     def _cleanup_expired(self, username):
         """
-        清理已过期/已删除的token（Redis已自动删除device_token:{t}的）
+        清理已过期/已删除/已踢出的token
         这些token仍留在sorted set里会导致设备数统计错误
         """
         user_devices_key = f"user_devices:{username}"
@@ -53,12 +53,24 @@ class DeviceManager:
 
         expired = []
         for t in all_tokens:
-            if not self.redis_client.exists(f"device_token:{t}"):
+            device_key = f"device_token:{t}"
+            if not self.redis_client.exists(device_key):
+                # 设备记录已过期（被Redis TTL删除），MAC映射会随TTL自行过期
+                expired.append(t)
+            elif self.redis_client.hget(device_key, 'kicked') == '1':
                 expired.append(t)
 
         if expired:
             self.redis_client.zrem(user_devices_key, *expired)
-            print(f"[DeviceManager] 清理{len(expired)}个过期token, 用户: {username}")
+            # 同步清理已踢出设备的MAC映射（已过期设备的MAC映射会随TTL自行过期）
+            for t in expired:
+                device_info = self.redis_client.hgetall(f"device_token:{t}")
+                if device_info:
+                    device_mac = device_info.get('mac', '')
+                    if device_mac:
+                        self.redis_client.delete(f"mac_token:{device_mac}")
+            print(f"[DeviceManager] 清理过期/已踢出设备: {len(expired)} 个")
+
         return len(expired)
 
     def _kick_device(self, username, token, reason="kicked"):
@@ -157,10 +169,15 @@ class DeviceManager:
 
                 if now - last_seen > timeout_seconds:
                     # 超时，清理
+                    # 获取设备MAC，同步清理MAC映射
+                    device_mac = info.get('mac', '')
                     self.redis_client.delete(key)
                     user_devices_key = f"user_devices:{username}"
                     self.redis_client.zrem(user_devices_key, token)
                     self.redis_client.delete(f"token_user:{token}")
+                    # 清理MAC映射，防止counter阶段通过MAC绕过token验证
+                    if device_mac:
+                        self.redis_client.delete(f"mac_token:{device_mac}")
                     cleaned_total += 1
                     cleaned_detail[username] = cleaned_detail.get(username, 0) + 1
                     print(f"[DeviceManager] 清理僵尸设备: token={token[:8]}..., "
@@ -204,6 +221,8 @@ class DeviceManager:
             self._kick_device(username, oldest_token, reason="device_limit_exceeded")
             kicked_token = oldest_token
             print(f"[DeviceManager] 踢出最早设备: {oldest_token[:8]}..., 用户: {username}")
+            # 重新获取设备列表，确保计数准确
+            devices = self.redis_client.zrange(user_devices_key, 0, -1, withscores=True)
 
         # 添加新设备到sorted set（score为登录时间）
         self.redis_client.zadd(user_devices_key, {token: current_time})
@@ -220,6 +239,17 @@ class DeviceManager:
         self.redis_client.hset(device_key, mapping=device_info)
         self.redis_client.expire(device_key, self.token_expire)
 
+        # 建立MAC到token的映射，用于counter阶段验证
+        if mac:
+            mac_token_key = f"mac_token:{mac}"
+            # 存储token和登录时间
+            self.redis_client.hset(mac_token_key, mapping={
+                'token': token,
+                'login_time': current_time
+            })
+            self.redis_client.expire(mac_token_key, self.token_expire)
+            print(f"[DeviceManager] 建立MAC映射: {mac} -> {token[:8]}...")
+
         print(f"[DeviceManager] 添加设备: {token[:8]}..., 用户: {username}, MAC: {mac}, "
               f"当前有效设备数: {len(devices) + 1}")
         return True, kicked_token
@@ -228,6 +258,11 @@ class DeviceManager:
         """主动移除设备（用户注销/手动踢出时调用）"""
         user_devices_key = f"user_devices:{username}"
         device_key = f"device_token:{token}"
+
+        # 移除前获取设备MAC，清理MAC映射
+        device_info = self.redis_client.hgetall(device_key)
+        if device_info and device_info.get('mac'):
+            self.redis_client.delete(f"mac_token:{device_info['mac']}")
 
         self.redis_client.zrem(user_devices_key, token)
         self.redis_client.delete(device_key)

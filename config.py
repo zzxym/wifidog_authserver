@@ -111,6 +111,10 @@ class Config:
     # WiFiDog
     WIFIDOG_GATEWAY_ID = os.getenv('WIFIDOG_GATEWAY_ID', 'default')
     AUTHSERVER_URL = os.getenv('AUTHSERVER_URL', 'http://127.0.0.1:5000')
+    # 默认网关地址（当AC未传递gw_address参数时使用）
+    DEFAULT_GATEWAY_ADDRESS = os.getenv('DEFAULT_GATEWAY_ADDRESS', '')
+    # 默认网关端口
+    DEFAULT_GATEWAY_PORT = os.getenv('DEFAULT_GATEWAY_PORT', '2060')
 
     # ========== 设备限制 ==========
     DEFAULT_MAX_DEVICES = int(os.getenv('DEFAULT_MAX_DEVICES', 3))

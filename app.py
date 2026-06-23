@@ -32,6 +32,55 @@ from ad_auth import ad_auth
 from device_manager import device_manager
 from local_auth import local_auth
 
+# ==================== 日志系统初始化 ====================
+
+_log_dir = Path(__file__).parent / 'log'
+_log_dir.mkdir(exist_ok=True)
+_log_file_path = _log_dir / f'authserver-{datetime.now().strftime("%Y-%m-%d")}.log'
+
+# TeeOutput：将 print() 输出同时写入控制台和日志文件（日志文件带时间戳）
+class _TeeOutput:
+    def __init__(self, original, log_fp):
+        self.original = original
+        self.log_fp = log_fp
+        self._buf = ""  # 行缓冲，用于补时间戳
+    def write(self, data):
+        self.original.write(data)
+        self.original.flush()
+        if self.log_fp and not self.log_fp.closed:
+            self._buf += data
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.log_fp.write(f"[{ts}] {line}\n")
+                self.log_fp.flush()
+    def flush(self):
+        self.original.flush()
+        if self.log_fp and not self.log_fp.closed:
+            if self._buf:  # 末尾未闭合行
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.log_fp.write(f"[{ts}] {self._buf}\n")
+                self._buf = ""
+            self.log_fp.flush()
+
+_log_fp = open(_log_file_path, 'a', encoding='utf-8')
+sys.stdout = _TeeOutput(sys.__stdout__, _log_fp)   # type: ignore
+sys.stderr = _TeeOutput(sys.__stderr__, _log_fp)   # type: ignore
+
+# 同时配置 logging 模块
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.__stdout__),
+        logging.FileHandler(_log_file_path, encoding='utf-8'),
+    ],
+    force=True,
+)
+
+print(f"[Log] 日志文件: {_log_file_path}")
+
 # ==================== Redis 自动启动（绿色部署） ====================
 
 _redis_process = None  # 保存 Redis 子进程引用
@@ -123,6 +172,8 @@ save 300 10
 save 60 10000
 dbfilename dump.rdb
 daemonize no
+appendonly yes
+appendfilename "appendonly.aof"
 """
             config_file.write_text(redis_conf, encoding='utf-8')
 
@@ -354,6 +405,8 @@ def login():
     gw_id = request.args.get('gw_id', '')
     mac = request.args.get('mac', '')
     url = request.args.get('url', '')
+    # 锐捷AC扩展参数：nasip是AC的实际IP地址
+    nasip = request.args.get('nasip', '')
 
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
@@ -363,12 +416,13 @@ def login():
         gw_id = request.form.get('gw_id', '')
         mac = request.form.get('mac', '')
         url = request.form.get('url', '')
+        nasip = request.form.get('nasip', '')
 
         if not username or not password:
             return render_template_string(
                 LOGIN_TEMPLATE,
                 gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
-                mac=mac, url=url, error="请输入用户名和密码",
+                mac=mac, url=url, nasip=nasip, error="请输入用户名和密码",
                 max_devices=config.DEFAULT_MAX_DEVICES
             )
 
@@ -377,7 +431,7 @@ def login():
             return render_template_string(
                 LOGIN_TEMPLATE,
                 gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
-                mac=mac, url=url,
+                mac=mac, url=url, nasip=nasip,
                 error=f"用户名或密码错误，请使用{get_auth_mode_label()}登录",
                 max_devices=config.DEFAULT_MAX_DEVICES,
                 auth_hint=get_auth_description()
@@ -405,14 +459,51 @@ def login():
             r.setex(f"kicked_token:{kicked_token}", config.TOKEN_EXPIRE_SECONDS, "1")
 
         print(f"[AuthServer] 用户[{username}]登录成功, token={token[:8]}..., IP={client_ip}")
-
-        gateway_url = f"http://{gw_address}:{gw_port}/wifidog/auth?token={token}"
+        
+        # 调试：打印网关参数
+        print(f"[DEBUG] gw_address={gw_address}, gw_port={gw_port}, gw_id={gw_id}, nasip={nasip}")
+        
+        # 确定最终的网关地址
+        # 优先级：gw_address > nasip > 配置的默认网关地址
+        # gw_address是客户端的真实内网网关，nasip是AC的WAN口管理IP
+        final_gw_address = None
+        if gw_address:
+            # gw_address是客户端的真实网关地址，优先使用
+            final_gw_address = gw_address
+            print(f"[DEBUG] 使用gw_address作为网关地址: {final_gw_address}")
+        elif nasip:
+            # 如果没有gw_address，使用nasip（AC的WAN口IP）
+            final_gw_address = nasip
+            print(f"[DEBUG] 使用nasip作为网关地址: {final_gw_address}")
+        elif config.DEFAULT_GATEWAY_ADDRESS:
+            final_gw_address = config.DEFAULT_GATEWAY_ADDRESS
+            print(f"[DEBUG] 使用配置的默认网关地址: {final_gw_address}")
+        
+        if not final_gw_address:
+            print(f"[ERROR] 网关地址为空！无法构建重定向URL")
+            return render_template_string(
+                """
+                <!DOCTYPE html>
+                <html lang="zh-CN">
+                <head><meta charset="UTF-8"><title>配置错误</title></head>
+                <body>
+                <h2>⚠️ 网关地址配置错误</h2>
+                <p>锐捷AC未传递网关地址参数(gw_address/nasip)，且服务器未配置默认网关地址。</p>
+                <p>请在 .env 文件中配置 DEFAULT_GATEWAY_ADDRESS 参数。</p>
+                <p>例如: DEFAULT_GATEWAY_ADDRESS=192.168.33.1</p>
+                </body>
+                </html>
+                """
+            )
+        
+        gateway_url = f"http://{final_gw_address}:{gw_port}/wifidog/auth?token={token}"
+        print(f"[DEBUG] 重定向到网关: {gateway_url}")
         return redirect(gateway_url)
 
     return render_template_string(
         LOGIN_TEMPLATE,
         gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
-        mac=mac, url=url, error=None,
+        mac=mac, url=url, nasip=nasip, error=None,
         max_devices=config.DEFAULT_MAX_DEVICES,
         auth_hint=get_auth_description()
     )
@@ -462,6 +553,389 @@ def ping():
     return "Pong", 200, {'Content-Type': 'text/plain'}
 
 
+# ==================== 锐捷AC适配接口 ====================
+
+@app.route('/auth/wifidogAuth/login/', methods=['GET', 'POST'])
+@app.route('/auth/wifidogAuth/login', methods=['GET', 'POST'])
+def ruijie_login():
+    """适配锐捷AC的WiFiDog登录接口"""
+    gw_address = request.args.get('gw_address', '')
+    gw_port = request.args.get('gw_port', '2060')
+    gw_id = request.args.get('gw_id', '')
+    mac = request.args.get('mac', '')
+    url = request.args.get('url', '')
+    nasip = request.args.get('nasip', '')
+    
+    print(f"[RuijieLogin] gw_address={gw_address}, gw_port={gw_port}, gw_id={gw_id}, nasip={nasip}")
+    
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        gw_address = request.form.get('gw_address', '')
+        gw_port = request.form.get('gw_port', '2060')
+        gw_id = request.form.get('gw_id', '')
+        mac = request.form.get('mac', '')
+        url = request.form.get('url', '')
+        nasip = request.form.get('nasip', '')
+        
+        if not username or not password:
+            return render_template_string(
+                LOGIN_TEMPLATE,
+                gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
+                mac=mac, url=url, nasip=nasip, error="请输入用户名和密码",
+                max_devices=config.DEFAULT_MAX_DEVICES
+            )
+        
+        success, user_info = authenticate_user(username, password)
+        if not success:
+            return render_template_string(
+                LOGIN_TEMPLATE,
+                gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
+                mac=mac, url=url, nasip=nasip,
+                error=f"用户名或密码错误，请使用{get_auth_mode_label()}登录",
+                max_devices=config.DEFAULT_MAX_DEVICES,
+                auth_hint=get_auth_description()
+            )
+        
+        token = generate_token()
+        client_ip = get_client_ip()
+        device_mac = mac
+        
+        max_devices = device_manager.get_max_devices(username)
+        add_success, kicked_token = device_manager.add_device(
+            username=username, token=token, mac=device_mac,
+            ip=client_ip, gw_id=gw_id
+        )
+        
+        if kicked_token:
+            kicked_info = device_manager.get_token_info(kicked_token)
+            kicked_mac = kicked_info.get('mac', 'N/A') if kicked_info else 'N/A'
+            print(f"[RuijieLogin] 用户[{username}]设备数超限({max_devices}台)，"
+                  f"已踢出最早设备 token={kicked_token[:8]}..., MAC={kicked_mac}")
+        
+        r = get_redis_client()
+        r.setex(f"token_user:{token}", config.TOKEN_EXPIRE_SECONDS, username)
+        if kicked_token:
+            r.setex(f"kicked_token:{kicked_token}", config.TOKEN_EXPIRE_SECONDS, "1")
+        
+        print(f"[RuijieLogin] 用户[{username}]登录成功, token={token[:8]}..., IP={client_ip}")
+        
+        # 自动登录管理页面，避免认证后再次要求登录
+        session['manage_user'] = username
+        
+        # 确定网关地址（优先级：gw_address > nasip > 默认配置）
+        final_gw_address = None
+        if gw_address:
+            final_gw_address = gw_address
+        elif nasip:
+            final_gw_address = nasip
+        elif config.DEFAULT_GATEWAY_ADDRESS:
+            final_gw_address = config.DEFAULT_GATEWAY_ADDRESS
+        
+        if not final_gw_address:
+            return render_template_string(
+                """
+                <!DOCTYPE html>
+                <html lang="zh-CN">
+                <head><meta charset="UTF-8"><title>配置错误</title></head>
+                <body>
+                <h2>⚠️ 网关地址配置错误</h2>
+                <p>锐捷AC未传递网关地址参数(gw_address/nasip)，且服务器未配置默认网关地址。</p>
+                </body>
+                </html>
+                """
+            )
+        
+        # 锐捷AC适配：返回认证成功页面，包含自动跳转脚本
+        gateway_url = f"http://{final_gw_address}:{gw_port}/wifidog/auth?token={token}"
+        print(f"[RuijieLogin] 认证成功页面，网关URL: {gateway_url}")
+        
+        # 用户最初访问的URL（AC传递的url参数）
+        original_url = request.args.get('url', 'http://www.baidu.com')
+        
+        return render_template_string(
+            """
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>认证成功</title>
+                <meta http-equiv="refresh" content="2;url=/manage">
+                <style>
+                    * { margin:0; padding:0; box-sizing: border-box; }
+                    body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+                    .container { background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); padding: 50px; text-align: center; max-width: 420px; }
+                    .icon { font-size: 64px; margin-bottom: 20px; }
+                    h2 { color: #11998e; margin-bottom: 15px; }
+                    p { color: #666; line-height: 1.8; }
+                    .countdown { font-size: 24px; font-weight: bold; color: #11998e; }
+                    .btn { display: inline-block; padding: 10px 30px; background: #11998e; color: white; border-radius: 25px; text-decoration: none; margin-top: 20px; }
+                </style>
+            </head>
+            <body>
+            <div class="container">
+                <div class="icon">✅</div>
+                <h2>认证成功！</h2>
+                <p>您已成功登录WiFi网络</p>
+                <p>正在跳转...</p>
+                <div class="countdown" id="countdown">2</div>
+                <p style="font-size:14px;color:#999;">如果没有自动跳转，请点击下方按钮</p>
+                <a href="/manage" class="btn">进入管理页面</a>
+            </div>
+            <script>
+                var countdown = 2;
+                var gatewayUrl = '{{ gateway_url }}';
+                var originalUrl = '{{ original_url }}';
+                
+                // 使用Image对象异步通知网关验证token
+                var img = new Image();
+                img.src = gatewayUrl + '&_t=' + Date.now();
+                
+                // 倒计时显示
+                var timer = setInterval(function() {
+                    countdown--;
+                    if (countdown <= 0) {
+                        clearInterval(timer);
+                        document.getElementById('countdown').textContent = '0';
+                        // 跳转到设备管理页面
+                        window.location.replace('/manage');
+                        return;
+                    }
+                    document.getElementById('countdown').textContent = countdown;
+                }, 1000);
+            </script>
+            </body>
+            </html>
+            """,
+            gateway_url=gateway_url,
+            original_url=original_url
+        )
+    
+    return render_template_string(
+        LOGIN_TEMPLATE,
+        gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
+        mac=mac, url=url, nasip=nasip, error=None,
+        max_devices=config.DEFAULT_MAX_DEVICES,
+        auth_hint=get_auth_description()
+    )
+
+
+@app.route('/auth/wifidogAuth/portal/', methods=['GET', 'POST'])
+@app.route('/auth/wifidogAuth/portal', methods=['GET', 'POST'])
+def ruijie_portal():
+    """适配锐捷AC的Portal认证接口"""
+    gw_id = request.args.get('gw_id', '')
+    gw_sn = request.args.get('gw_sn', '')
+    client_ip = request.args.get('ip', '')
+    mac = request.args.get('mac', '')
+    message = request.args.get('message', '')
+    token = request.args.get('token', '')
+    
+    print(f"[RuijiePortal] gw_id={gw_id}, gw_sn={gw_sn}, ip={client_ip}, mac={mac}, message={message}, token={token[:8] if token else 'N/A'}...")
+    
+    # 如果有token参数，说明是AC来验证Token
+    if token:
+        r = get_redis_client()
+        
+        # 检查token是否被踢出
+        if r.exists(f"kicked_token:{token}"):
+            print(f"[RuijiePortal] 拒绝: token已被踢出")
+            return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # 检查token是否有效
+        username = r.get(f"token_user:{token}")
+        if not username:
+            print(f"[RuijiePortal] 拒绝: token无效或已过期")
+            return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # 更新设备最后活跃时间
+        device_manager.update_last_seen(token)
+        
+        print(f"[RuijiePortal] 通过: token={token[:8]}..., user={username}")
+        return "Auth: 1\n", 200, {'Content-Type': 'text/plain'}
+    
+    # 如果message=denied，说明认证被拒绝，需要重新登录
+    if message == 'denied':
+        print(f"[RuijiePortal] 认证被拒绝，重定向到登录页")
+        # 重定向到锐捷AC期望的登录接口
+        login_url = f"/auth/wifidogAuth/login?gw_id={gw_id}&gw_sn={gw_sn}&ip={client_ip}&mac={mac}"
+        return redirect(login_url)
+    
+    # 其他情况，返回登录页
+    return render_template_string(
+        LOGIN_TEMPLATE,
+        gw_address='', gw_port='2060', gw_id=gw_id,
+        mac=mac, url='', nasip='', error=None,
+        max_devices=config.DEFAULT_MAX_DEVICES,
+        auth_hint=get_auth_description()
+    )
+
+
+@app.route('/auth/wifidogAuth/auth/', methods=['GET', 'POST'])
+@app.route('/auth/wifidogAuth/auth', methods=['GET', 'POST'])
+def ruijie_auth():
+    """适配锐捷AC的WiFiDog Token验证接口"""
+    token = request.args.get('token', '')
+    stage = request.args.get('stage', 'login')
+    client_ip = request.args.get('ip', '')
+    mac = request.args.get('mac', '')
+    gw_id = request.args.get('gw_id', '')
+    
+    print(f"[RuijieAuth] token={token[:8] if token else 'N/A'}..., stage={stage}, ip={client_ip}, mac={mac}, gw_id={gw_id}")
+    
+    r = get_redis_client()
+    
+    # counter阶段：检查设备是否应继续放行
+    if stage == 'counter':
+        # ===== 第一道防线：显式踢出检查（不依赖 token_user 是否存在） =====
+        if token and r.exists(f"kicked_token:{token}"):
+            print(f"[RuijieAuth] counter阶段拒绝: token已被踢出 token={token[:8]}...")
+            # 自愈：清理残留的 token_user 和 MAC 映射
+            r.delete(f"token_user:{token}")
+            device_info = r.hgetall(f"device_token:{token}")
+            if device_info and device_info.get('mac'):
+                r.delete(f"mac_token:{device_info['mac']}")
+            r.delete(f"device_token:{token}")
+            return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # ===== 情形1：有 token 参数，走标准 token 验证 =====
+        if token and r.exists(f"token_user:{token}"):
+            token_user = r.get(f"token_user:{token}")
+            if token_user:
+                kick_timestamp_key = f"user_kick_timestamp:{token_user}"
+                kick_timestamp = r.get(kick_timestamp_key)
+                if kick_timestamp:
+                    kick_time = int(kick_timestamp)
+                    device_info = r.hgetall(f"device_token:{token}")
+                    login_time = int(device_info.get('login_time', 0)) if device_info else 0
+                    if login_time < kick_time:
+                        print(f"[RuijieAuth] counter阶段拒绝: 设备登录时间早于踢出时间")
+                        return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+            
+            # 更新设备最后活跃时间
+            device_manager.update_last_seen(token)
+            print(f"[RuijieAuth] counter阶段通过: token={token[:8]}... (token验证)")
+            return "Auth: 1\n", 200, {'Content-Type': 'text/plain'}
+        
+        # ===== 情形2：无 token 或无有效 token，使用 MAC 查找 =====
+        if not mac:
+            print(f"[RuijieAuth] counter阶段拒绝: 无MAC且token无效")
+            return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        mac_token_key = f"mac_token:{mac}"
+        mac_info = r.hgetall(mac_token_key)
+        
+        if not mac_info or not mac_info.get('token'):
+            # MAC 无映射记录 → 拒绝（不再盲目放行未知设备）
+            # 尝试扫描 device_token 中是否有此 MAC 的有效记录
+            matched = False
+            for key in r.scan_iter("device_token:*", count=200):
+                device_info = r.hgetall(key)
+                if device_info.get('mac') == mac and device_info.get('kicked') != '1':
+                    scan_token = key.replace('device_token:', '')
+                    scan_token_user = r.get(f"token_user:{scan_token}")
+                    if scan_token_user:
+                        # 检查踢出时间戳
+                        kick_timestamp_key = f"user_kick_timestamp:{scan_token_user}"
+                        kick_timestamp = r.get(kick_timestamp_key)
+                        if kick_timestamp:
+                            kick_time = int(kick_timestamp)
+                            login_time = int(device_info.get('login_time', 0))
+                            if login_time < kick_time:
+                                print(f"[RuijieAuth] counter阶段拒绝: MAC={mac} 登录时间早于踢出时间")
+                                return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+                        
+                        # 重建 MAC 映射并放行
+                        now_ts = int(time.time())
+                        r.hset(mac_token_key, mapping={
+                            'token': scan_token,
+                            'login_time': login_time
+                        })
+                        r.expire(mac_token_key, config.TOKEN_EXPIRE_SECONDS)
+                        device_manager.update_last_seen(scan_token)
+                        matched = True
+                        print(f"[RuijieAuth] counter阶段通过: MAC={mac} 找到有效token={scan_token[:8]}... (重建映射)")
+                        return "Auth: 1\n", 200, {'Content-Type': 'text/plain'}
+            
+            if not matched:
+                print(f"[RuijieAuth] counter阶段拒绝: MAC={mac} 无有效记录")
+                return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # ===== 情形3：MAC 映射存在，验证关联的 token =====
+        device_token = mac_info.get('token')
+        login_time = int(mac_info.get('login_time', 0))
+        
+        # 3a. 检查 token 是否被显式踢出
+        if r.exists(f"kicked_token:{device_token}"):
+            print(f"[RuijieAuth] counter阶段拒绝: MAC={mac} 的token已被踢出")
+            return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # 3b. 检查 token 是否仍然有效（核心修复！）
+        token_user = r.get(f"token_user:{device_token}")
+        if not token_user:
+            # token已过期，清理MAC映射
+            r.delete(mac_token_key)
+            print(f"[RuijieAuth] counter阶段拒绝: MAC={mac} 的token已过期")
+            return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # 3c. 检查用户踢出时间戳
+        kick_timestamp_key = f"user_kick_timestamp:{token_user}"
+        kick_timestamp = r.get(kick_timestamp_key)
+        if kick_timestamp:
+            kick_time = int(kick_timestamp)
+            if login_time < kick_time:
+                r.delete(mac_token_key)
+                print(f"[RuijieAuth] counter阶段拒绝: MAC={mac} 的设备登录时间早于踢出时间")
+                return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+        
+        # 3d. 更新设备最后活跃时间并续期
+        device_manager.update_last_seen(device_token)
+        print(f"[RuijieAuth] counter阶段通过: MAC={mac}, token={device_token[:8]}...")
+        return "Auth: 1\n", 200, {'Content-Type': 'text/plain'}
+    
+    # logout阶段不需要token验证，直接通过
+    if stage == 'logout':
+        print(f"[RuijieAuth] {stage}阶段通过")
+        return "Auth: 1\n", 200, {'Content-Type': 'text/plain'}
+    
+    if not token:
+        print("[RuijieAuth] 拒绝: 无token")
+        return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+    
+    # 检查token是否被踢出
+    if r.exists(f"kicked_token:{token}"):
+        print(f"[RuijieAuth] 拒绝: token已被踢出")
+        return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+    
+    # 检查token是否有效
+    username = r.get(f"token_user:{token}")
+    if not username:
+        print(f"[RuijieAuth] 拒绝: token无效或已过期")
+        return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+    
+    # 检查用户是否有踢出时间戳
+    kick_timestamp_key = f"user_kick_timestamp:{username}"
+    kick_timestamp = r.get(kick_timestamp_key)
+    if kick_timestamp:
+        kick_time = int(kick_timestamp)
+        # 获取设备的登录时间
+        device_key = f"device_token:{token}"
+        device_info = r.hgetall(device_key)
+        if device_info:
+            login_time = int(device_info.get('login_time', 0))
+            # 如果设备的登录时间早于踢出时间，说明设备在踢出后没有重新登录，应该被拒绝
+            if login_time < kick_time:
+                print(f"[RuijieAuth] 拒绝: 设备登录时间早于踢出时间")
+                return "Auth: 0\n", 200, {'Content-Type': 'text/plain'}
+    
+    # 更新设备最后活跃时间
+    device_manager.update_last_seen(token)
+    
+    print(f"[RuijieAuth] 通过: token={token[:8]}..., user={username}, stage={stage}")
+    return "Auth: 1\n", 200, {'Content-Type': 'text/plain'}
+
+
 @app.route('/portal', methods=['GET'])
 @app.route('/portal/', methods=['GET'])
 def portal():
@@ -477,6 +951,84 @@ def gw_message():
     """认证失败等消息页面"""
     message = request.args.get('message', 'unknown')
     return render_template_string(MESSAGE_TEMPLATE, message=message)
+
+
+# ==================== 调试测试端点 ====================
+
+@app.route('/test_login', methods=['GET', 'POST'])
+def test_login():
+    """测试登录页面，模拟WiFiDog网关跳转"""
+    # 从配置或URL参数获取网关地址
+    gw_address = request.args.get('gw_address', config.DEFAULT_GATEWAY_ADDRESS or '192.168.40.148')
+    gw_port = request.args.get('gw_port', config.DEFAULT_GATEWAY_PORT or '2060')
+    gw_id = request.args.get('gw_id', 'test_gateway')
+    mac = request.args.get('mac', '00:11:22:33:44:55')
+    url = request.args.get('url', 'http://www.baidu.com')
+    
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        
+        if not username or not password:
+            return render_template_string(
+                LOGIN_TEMPLATE,
+                gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
+                mac=mac, url=url, error="请输入用户名和密码",
+                max_devices=config.DEFAULT_MAX_DEVICES
+            )
+        
+        success, user_info = authenticate_user(username, password)
+        if not success:
+            return render_template_string(
+                LOGIN_TEMPLATE,
+                gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
+                mac=mac, url=url,
+                error=f"用户名或密码错误，请使用{get_auth_mode_label()}登录",
+                max_devices=config.DEFAULT_MAX_DEVICES,
+                auth_hint=get_auth_description()
+            )
+        
+        token = generate_token()
+        client_ip = get_client_ip()
+        
+        max_devices = device_manager.get_max_devices(username)
+        add_success, kicked_token = device_manager.add_device(
+            username=username, token=token, mac=mac,
+            ip=client_ip, gw_id=gw_id
+        )
+        
+        r = get_redis_client()
+        r.setex(f"token_user:{token}", config.TOKEN_EXPIRE_SECONDS, username)
+        
+        print(f"[Test] 用户[{username}]测试登录成功, token={token[:8]}..., IP={client_ip}")
+        print(f"[Test] 重定向到网关: http://{gw_address}:{gw_port}/wifidog/auth?token={token}")
+        
+        # 返回测试结果页面，显示网关重定向URL
+        result_html = f"""
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head><meta charset="UTF-8"><title>测试结果</title></head>
+        <body>
+        <h2>✅ 测试登录成功！</h2>
+        <p><strong>用户名:</strong> {username}</p>
+        <p><strong>Token:</strong> {token}</p>
+        <p><strong>网关地址:</strong> {gw_address}:{gw_port}</p>
+        <p><strong>重定向URL:</strong> http://{gw_address}:{gw_port}/wifidog/auth?token={token}</p>
+        <p><strong>下一步:</strong> 请在锐捷AC上配置WiFiDog协议，将重定向地址设置为:</p>
+        <p><code>{config.AUTHSERVER_URL}/login</code></p>
+        <p><a href="/auth?token={token}&ip=192.168.40.148&mac={mac}&gw_id={gw_id}&stage=login">测试认证接口</a></p>
+        </body>
+        </html>
+        """
+        return result_html
+    
+    return render_template_string(
+        LOGIN_TEMPLATE,
+        gw_address=gw_address, gw_port=gw_port, gw_id=gw_id,
+        mac=mac, url=url, nasip=nasip, error=None,
+        max_devices=config.DEFAULT_MAX_DEVICES,
+        auth_hint=get_auth_description()
+    )
 
 
 # ==================== 用户自助设备管理 ====================
@@ -680,11 +1232,49 @@ def admin_user_detail(username):
         elif action == 'kick':
             kick_token = request.form.get('kick_token', '')
             if kick_token:
+                # 获取设备的MAC地址
+                device_info = device_manager.get_token_info(kick_token)
+                device_mac = device_info.get('mac', '') if device_info else ''
+                
+                # 移除设备
                 device_manager.remove_device(username, kick_token)
+                
+                # 设置kicked_token
                 r = get_redis_client()
                 r.setex(f"kicked_token:{kick_token}", config.TOKEN_EXPIRE_SECONDS, "1")
+                
+                # 设置全局踢出时间戳（用于检测设备是否在踢出后重新登录）
+                kick_timestamp_key = f"user_kick_timestamp:{username}"
+                r.set(kick_timestamp_key, int(time.time()))
+                
+                # 清除该设备的MAC映射（防止旧MAC映射导致问题）
+                if device_mac:
+                    mac_token_key = f"mac_token:{device_mac}"
+                    r.delete(mac_token_key)
+                    print(f"[Admin] 清除设备MAC映射: {device_mac}")
+                
                 message = f"已踢出设备 token={kick_token[:8]}..."
                 print(f"[Admin] 管理员踢出用户[{username}]设备 token={kick_token[:8]}...")
+
+        elif action == 'kickall':
+            # 踢出用户的所有设备
+            devices = device_manager.get_user_devices(username)
+            kicked_count = 0
+            r = get_redis_client()
+            for device in devices:
+                kick_token = device.get('token', '')
+                if kick_token:
+                    device_mac = device.get('mac', '')
+                    device_manager.remove_device(username, kick_token)
+                    r.setex(f"kicked_token:{kick_token}", config.TOKEN_EXPIRE_SECONDS, "1")
+                    if device_mac:
+                        r.delete(f"mac_token:{device_mac}")
+                    kicked_count += 1
+            # 设置全局踢出时间戳
+            kick_timestamp_key = f"user_kick_timestamp:{username}"
+            r.set(kick_timestamp_key, int(time.time()))
+            message = f"已踢出 {username} 的 {kicked_count} 个设备"
+            print(f"[Admin] 管理员踢出用户[{username}]的所有设备，共{kicked_count}个")
 
     # 获取用户详情
     devices = device_manager.get_user_devices(username)
@@ -967,6 +1557,7 @@ LOGIN_TEMPLATE = """
         <input type="hidden" name="gw_id" value="{{ gw_id }}">
         <input type="hidden" name="mac" value="{{ mac }}">
         <input type="hidden" name="url" value="{{ url }}">
+        <input type="hidden" name="nasip" value="{{ nasip }}">
         <input type="text" name="username" placeholder="用户名" required autofocus>
         <input type="password" name="password" placeholder="密码" required>
         <button type="submit">登 录</button>
