@@ -30,7 +30,7 @@ jobs:
       fail-fast: false                       # 一个平台失败不影响另一个
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: linux
             artifact_name: wifidog-authserver-linux
           - os: windows-latest
