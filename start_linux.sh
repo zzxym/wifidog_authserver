@@ -40,8 +40,10 @@ while [[ $# -gt 0 ]]; do
             fi
             echo ""
             echo "[2/2] 停止 Redis (Docker)..."
-            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^wifidog-redis$'; then
-                docker stop wifidog-redis
+            DOCKER_STOP="docker"
+            command -v docker &> /dev/null || DOCKER_STOP="sudo docker"
+            if $DOCKER_STOP ps --format '{{.Names}}' 2>/dev/null | grep -q '^wifidog-redis$'; then
+                $DOCKER_STOP stop wifidog-redis 2>/dev/null
                 echo "   ✅ wifidog-redis 已停止"
             else
                 echo "   ℹ️  wifidog-redis 未在运行"
@@ -78,17 +80,35 @@ if redis-cli ping > /dev/null 2>&1; then
     REDIS_STARTED=true
 fi
 
+# ── 查找可用的 docker 命令 ──
+DOCKER_CMD=""
+if command -v docker &> /dev/null; then
+    if docker info &> /dev/null; then
+        DOCKER_CMD="docker"
+    elif command -v sudo &> /dev/null && sudo docker info &> /dev/null 2>&1; then
+        DOCKER_CMD="sudo docker"
+    fi
+fi
+
 # Docker 启动 Redis
 if [ "$REDIS_STARTED" = false ]; then
     echo "   🐳 使用 Docker 启动 Redis..."
-    if ! command -v docker &> /dev/null; then
-        echo "   ❌ 未安装 Docker，请先安装: curl -fsSL https://get.docker.com | sh"
-        exit 1
+    # 自动安装 Docker
+    if [ -z "$DOCKER_CMD" ]; then
+        echo "   ⚠️  未检测到 Docker，正在自动安装..."
+        if command -v sudo &> /dev/null; then
+            curl -fsSL https://get.docker.com | sudo sh
+            sudo usermod -aG docker "$USER" 2>/dev/null || true
+        else
+            curl -fsSL https://get.docker.com | sh
+        fi
+        echo "   ✅ Docker 安装完成"
+        DOCKER_CMD="sudo docker"
     fi
-    if docker ps -a --format '{{.Names}}' | grep -q '^wifidog-redis$'; then
-        docker start wifidog-redis 2>/dev/null
+    if $DOCKER_CMD ps -a --format '{{.Names}}' | grep -q '^wifidog-redis$'; then
+        $DOCKER_CMD start wifidog-redis
     else
-        docker run -d \
+        $DOCKER_CMD run -d \
             --name wifidog-redis \
             --restart unless-stopped \
             -p 127.0.0.1:6379:6379 \
